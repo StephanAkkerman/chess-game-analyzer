@@ -86,3 +86,26 @@ def test_download_fails_when_no_mirror_has_the_file(tmp_path):
             session=session,
             log=lambda _: None,
         )
+
+
+def test_download_fills_in_the_table_type(tmp_path):
+    names = table_files(pieces=3)
+    session = fake_session(
+        {
+            f"https://a.test/{'wdl' if n.endswith('w') else 'dtz'}/{n}": (
+                WDL if n.endswith("w") else chess.Board.tbz_magic + b"table"
+            )
+            for n in names
+        }
+    )
+
+    count = download(
+        tmp_path,
+        ["https://a.test/{type}"],
+        pieces=3,
+        session=session,
+        log=lambda _: None,
+    )
+
+    assert count == 10
+    assert (tmp_path / "KQvK.rtbz").read_bytes().startswith(chess.Board.tbz_magic)
