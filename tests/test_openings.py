@@ -9,6 +9,7 @@ from chess_analyzer.openings import (
     BookMove,
     LichessExplorer,
     PolyglotBook,
+    book_plies,
     find_deviation,
     rank_moves,
 )
@@ -132,3 +133,12 @@ def test_lichess_explorer_filters_normalises_and_caches():
 def test_lichess_explorer_rejects_unknown_database():
     with pytest.raises(ValueError):
         LichessExplorer(database="chess.com")
+
+
+def test_book_plies(scholars_mate_pgn):
+    game = read_games(scholars_mate_pgn)[0]
+    source = FakeSource(["e4 e5 Bc4 Nc6 Qh5 g6"])
+    assert book_plies(game, find_deviation(game, source)) == {1, 2, 3, 4, 5}
+    # Stayed in book: every ply up to max_ply, or the whole game.
+    assert book_plies(game, None, max_ply=4) == {1, 2, 3, 4}
+    assert book_plies(game, None, max_ply=30) == set(range(1, 8))

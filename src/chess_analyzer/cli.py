@@ -11,12 +11,22 @@ import chess
 import chess.engine
 import chess.pgn
 
-from chess_analyzer.engine import analyze_game, find_engine
+from chess_analyzer.engine import (
+    DEFAULT_DEPTH,
+    DEFAULT_MAX_TIME,
+    analyze_game,
+    default_threads,
+    find_engine,
+    make_limit,
+    open_engine,
+    open_tablebase,
+)
 from chess_analyzer.fetch import ChessComClient
 from chess_analyzer.openings import (
     LichessExplorer,
     OpeningSource,
     PolyglotBook,
+    book_plies,
     find_deviation,
 )
 from chess_analyzer.parse import player_color, read_games
@@ -63,13 +73,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="Stockfish binary (default: $STOCKFISH_PATH or stockfish on PATH).",
     )
     engine.add_argument(
-        "--time",
-        type=float,
-        default=0.5,
-        help="Seconds of engine time per position (default: 0.5).",
+        "--depth",
+        type=int,
+        default=DEFAULT_DEPTH,
+        help=f"Search depth per position (default: {DEFAULT_DEPTH}).",
     )
     engine.add_argument(
-        "--depth", type=int, help="Search to a fixed depth instead of using --time."
+        "--max-time",
+        type=float,
+        default=DEFAULT_MAX_TIME,
+        help="Stop a search after this many seconds even if the depth was not "
+        f"reached (default: {DEFAULT_MAX_TIME:g}).",
+    )
+    engine.add_argument(
+        "--time",
+        type=float,
+        help="Search each position for this many seconds instead of to a depth.",
+    )
+    engine.add_argument(
+        "--threads",
+        type=int,
+        default=default_threads(),
+        help="Engine threads (default: CPU cores minus one).",
+    )
+    engine.add_argument(
+        "--syzygy",
+        metavar="DIR",
+        default=os.environ.get("SYZYGY_PATH"),
+        help="Syzygy tablebase directory; endgames it covers are not searched "
+        "(default: $SYZYGY_PATH).",
     )
     engine.add_argument(
         "--no-engine", action="store_true", help="Skip the engine analysis."
@@ -143,20 +175,31 @@ def main(argv: list[str] | None = None) -> int:
                     file=sys.stderr,
                 )
                 return 1
-            engine = stack.enter_context(chess.engine.SimpleEngine.popen_uci(path))
+            engine = stack.enter_context(
+                open_engine(path, threads=args.threads, syzygy_path=args.syzygy)
+            )
+        tablebase = (
+            stack.enter_context(open_tablebase(args.syzygy)) if args.syzygy else None
+        )
         limit = (
-            chess.engine.Limit(depth=args.depth)
-            if args.depth
-            else chess.engine.Limit(time=args.time)
+            make_limit(depth=None, time=args.time)
+            if args.time
+            else make_limit(depth=args.depth, max_time=args.max_time)
         )
         source = open_opening_source(args, stack)
 
         for i, game in enumerate(games):
             color = player_color(game, args.username)
-            analysis = analyze_game(game, engine, limit) if engine else None
             deviation = (
                 find_deviation(game, source, max_ply=args.opening_plies)
                 if source
+                else None
+            )
+            # Book moves need no engine time.
+            book = book_plies(game, deviation, args.opening_plies) if source else set()
+            analysis = (
+                analyze_game(game, engine, limit, book_plies=book, tablebase=tablebase)
+                if engine
                 else None
             )
             if i:

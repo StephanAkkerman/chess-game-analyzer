@@ -1,23 +1,38 @@
-"""Background workers that run Stockfish analyses from a queue."""
+"""Background workers that analyse games from a queue.
+
+Each worker keeps one Stockfish process, opening source and set of endgame
+tablebases open between jobs. Book moves and tablebase positions are not
+searched, which keeps the engine work small enough for a Raspberry Pi.
+"""
 
 from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import queue
 import secrets
 import threading
 from collections.abc import Callable
+from pathlib import Path
 
 import chess
 import chess.engine
 import chess.pgn
 
-from chess_analyzer.engine import analyze_game, find_engine
+from chess_analyzer.engine import (
+    Tablebase,
+    analyze_game,
+    engine_major_version,
+    find_engine,
+    open_engine,
+    open_tablebase,
+)
 from chess_analyzer.openings import (
     LichessExplorer,
     OpeningSource,
     PolyglotBook,
+    book_plies,
     find_deviation,
 )
 from chess_analyzer.parse import read_games
@@ -29,6 +44,7 @@ log = logging.getLogger(__name__)
 
 EngineFactory = Callable[[], chess.engine.SimpleEngine]
 OpeningFactory = Callable[[], OpeningSource | None]
+TablebaseFactory = Callable[[], Tablebase | None]
 
 
 class InvalidGame(ValueError):
@@ -66,6 +82,8 @@ def game_key(game: chess.pgn.Game, settings: Settings) -> str:
         moves,
         game.headers.get("Link", ""),
         settings.engine_label,
+        settings.opening_label or "",
+        "syzygy" if has_tablebases(settings.syzygy_path) else "",
     ]
     return hashlib.sha256("|".join(parts).encode()).hexdigest()
 
@@ -75,19 +93,37 @@ def default_engine_factory(settings: Settings) -> EngineFactory:
     if path is None:
         raise RuntimeError("Stockfish not found; set STOCKFISH_PATH.")
 
+    syzygy = settings.syzygy_path if has_tablebases(settings.syzygy_path) else None
+
     def factory() -> chess.engine.SimpleEngine:
-        engine = chess.engine.SimpleEngine.popen_uci(path)
-        engine.configure(
-            {"Threads": settings.stockfish_threads, "Hash": settings.stockfish_hash}
+        return open_engine(
+            path,
+            threads=settings.threads,
+            hash_mb=settings.stockfish_hash,
+            syzygy_path=syzygy,
+            nice=settings.engine_nice,
         )
-        return engine
+
+    return factory
+
+
+def has_tablebases(path: str | None) -> bool:
+    """Return whether ``path`` is a directory containing Syzygy WDL tables."""
+    return bool(path) and Path(path).is_dir() and any(Path(path).glob("*.rtbw"))
+
+
+def default_tablebase_factory(settings: Settings) -> TablebaseFactory:
+    def factory() -> Tablebase | None:
+        if not has_tablebases(settings.syzygy_path):
+            return None
+        return open_tablebase(settings.syzygy_path)
 
     return factory
 
 
 def default_opening_factory(settings: Settings) -> OpeningFactory:
     def factory() -> OpeningSource | None:
-        if settings.opening_book:
+        if settings.opening_book and os.path.isfile(settings.opening_book):
             return PolyglotBook(settings.opening_book)
         if settings.opening_explorer in ("lichess", "masters"):
             return LichessExplorer(
@@ -109,9 +145,9 @@ class AnalysisService:
         App settings.
     store : Store
         Where jobs and results are kept.
-    engine_factory, opening_factory : callable, optional
-        Create the engine and opening source for a worker. Default to Stockfish
-        and the source configured in ``settings``.
+    engine_factory, opening_factory, tablebase_factory : callable, optional
+        Create the engine, opening source and tablebases for a worker. Default
+        to Stockfish and the sources configured in ``settings``.
     """
 
     def __init__(
@@ -120,16 +156,17 @@ class AnalysisService:
         store: Store,
         engine_factory: EngineFactory | None = None,
         opening_factory: OpeningFactory | None = None,
+        tablebase_factory: TablebaseFactory | None = None,
     ) -> None:
         self.settings = settings
         self.store = store
         self.engine_factory = engine_factory or default_engine_factory(settings)
         self.opening_factory = opening_factory or default_opening_factory(settings)
-        self.limit = (
-            chess.engine.Limit(depth=settings.analysis_depth)
-            if settings.analysis_depth
-            else chess.engine.Limit(time=settings.analysis_time)
+        self.tablebase_factory = tablebase_factory or default_tablebase_factory(
+            settings
         )
+        self.limit = settings.limit
+        self.engine_name: str | None = None
         self._queue: queue.Queue[str | None] = queue.Queue()
         self._waiting: list[str] = []
         self._lock = threading.Lock()
@@ -181,19 +218,45 @@ class AnalysisService:
         self._enqueue(job.id)
         return job
 
+    def _start_engine(self) -> chess.engine.SimpleEngine:
+        engine = self.engine_factory()
+        name = getattr(engine, "id", {}).get("name")
+        if name and name != self.engine_name:
+            self.engine_name = name
+            log.info("Started %s", name)
+            major = engine_major_version(engine)
+            if name.startswith("Stockfish") and major is not None and major < 16:
+                log.warning(
+                    "%s is old; Stockfish 16 or newer evaluates with NNUE only "
+                    "and is much stronger.",
+                    name,
+                )
+        return engine
+
     def _work(self) -> None:
         engine = None
         opening = None
+        tablebase = None
+        tablebase_opened = False
         try:
+            # Start the engine right away, so a broken setup shows in the logs
+            # at startup rather than on the first analysis.
+            try:
+                engine = self._start_engine()
+            except Exception:
+                log.exception("Could not start the engine")
             while (job_id := self._queue.get()) is not None:
                 with self._lock:
                     self._waiting.remove(job_id)
                 try:
                     if engine is None:
-                        engine = self.engine_factory()
+                        engine = self._start_engine()
                     if opening is None:
                         opening = self.opening_factory()
-                    self._run(job_id, engine, opening)
+                    if not tablebase_opened:
+                        tablebase = self.tablebase_factory()
+                        tablebase_opened = True
+                    self._run(job_id, engine, opening, tablebase)
                 except chess.engine.EngineTerminatedError:
                     log.exception("Engine died while analysing %s", job_id)
                     self.store.set_failed(job_id, "The engine stopped unexpectedly.")
@@ -204,14 +267,16 @@ class AnalysisService:
         finally:
             if engine is not None:
                 engine.quit()
-            if hasattr(opening, "close"):
-                opening.close()
+            for resource in (opening, tablebase):
+                if hasattr(resource, "close"):
+                    resource.close()
 
     def _run(
         self,
         job_id: str,
         engine: chess.engine.SimpleEngine,
         opening: OpeningSource | None,
+        tablebase: Tablebase | None = None,
     ) -> None:
         job = self.store.get(job_id)
         if job is None or job.status in (DONE, FAILED):
@@ -219,12 +284,13 @@ class AnalysisService:
         game = parse_single_game(job.pgn, self.settings.max_plies)
         self.store.set_running(job_id)
 
-        deviation, opening_error = None, None
+        deviation, opening_error, book = None, None, set()
         if opening is not None:
             try:
                 deviation = find_deviation(
                     game, opening, max_ply=self.settings.opening_plies
                 )
+                book = book_plies(game, deviation, self.settings.opening_plies)
             except Exception as exc:  # noqa: BLE001 - the engine part still works
                 log.warning("Opening lookup failed for %s: %s", job_id, exc)
                 opening_error = "The opening explorer could not be reached."
@@ -236,6 +302,8 @@ class AnalysisService:
             on_progress=lambda done, total: self.store.set_progress(
                 job_id, done, total
             ),
+            book_plies=book,
+            tablebase=tablebase,
         )
         result = result_to_dict(
             game,
@@ -244,5 +312,6 @@ class AnalysisService:
             opening_checked=opening is not None and opening_error is None,
             opening_error=opening_error,
             engine_label=self.settings.engine_label,
+            engine_name=self.engine_name,
         )
         self.store.set_done(job_id, result)

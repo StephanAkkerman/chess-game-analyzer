@@ -5,13 +5,26 @@ from __future__ import annotations
 import chess
 import chess.pgn
 
-from chess_analyzer.engine import CLASSIFICATIONS, MATE_SCORE, GameAnalysis
+from chess_analyzer.engine import (
+    CLASSIFICATIONS,
+    MATE_SCORE,
+    TABLEBASE,
+    GameAnalysis,
+)
 from chess_analyzer.openings import OpeningDeviation
 from chess_analyzer.parse import opening_name
 
 
-def format_eval(cp: int) -> str:
-    """Format a White-POV evaluation, e.g. ``+1.25``, ``-M3`` or ``#`` (mated)."""
+def format_eval(cp: int | None, source: str | None = None) -> str:
+    """Format a White-POV evaluation, e.g. ``+1.25``, ``-M3`` or ``#`` (mated).
+
+    Tablebase results are shown as ``TB 1-0``, ``TB draw`` or ``TB 0-1``, and
+    unevaluated book positions as ``book``.
+    """
+    if cp is None:
+        return "book"
+    if source == TABLEBASE:
+        return "TB 1-0" if cp > 0 else "TB 0-1" if cp < 0 else "TB draw"
     if abs(cp) >= MATE_SCORE - 500:
         moves = MATE_SCORE - abs(cp)
         sign = "+" if cp > 0 else "-"
@@ -101,7 +114,21 @@ def format_game_report(
             for m in worst:
                 lines.append(
                     f"    {m.label:<12} {m.classification:<8} "
-                    f"{format_eval(m.eval_before)} -> {format_eval(m.eval_after)}  "
+                    f"{format_eval(m.eval_before, m.source_before)} -> "
+                    f"{format_eval(m.eval_after, m.source)}  "
                     f"best was {m.best_san}"
                 )
+    if analysis is not None:
+        sources = analysis.sources
+        total = sum(sources.values())
+        detail = ", ".join(
+            f"{sources[k]} {k}"
+            for k in ("book", "tablebase", "forced", "terminal")
+            if sources[k]
+        )
+        lines.append("")
+        lines.append(
+            f"Engine searched {sources['engine']} of {total} positions"
+            + (f" ({detail})." if detail else ".")
+        )
     return "\n".join(lines)

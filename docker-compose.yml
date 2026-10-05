@@ -3,20 +3,32 @@
 services:
   app:
     image: ghcr.io/stephanakkerman/chess-game-analyzer:latest
-    build: .
+    build:
+      context: .
+      args:
+        # armv8-dotprod is faster on a Raspberry Pi 5 (not for a Pi 4).
+        STOCKFISH_ARCH: ${STOCKFISH_ARCH:-}
     restart: unless-stopped
     environment:
       ACCESS_CODE: ${ACCESS_CODE:-}
-      ANALYSIS_TIME: ${ANALYSIS_TIME:-0.3}
-      ANALYSIS_DEPTH: ${ANALYSIS_DEPTH:-}
-      STOCKFISH_THREADS: ${STOCKFISH_THREADS:-2}
+      ANALYSIS_DEPTH: ${ANALYSIS_DEPTH:-16}
+      ANALYSIS_MAX_TIME: ${ANALYSIS_MAX_TIME:-15}
+      ANALYSIS_TIME: ${ANALYSIS_TIME:-}
+      STOCKFISH_THREADS: ${STOCKFISH_THREADS:-}
       STOCKFISH_HASH: ${STOCKFISH_HASH:-128}
+      ENGINE_NICE: ${ENGINE_NICE:-10}
       WORKERS: ${WORKERS:-1}
       MAX_QUEUE: ${MAX_QUEUE:-20}
+      OPENING_BOOK: /books/${OPENING_BOOK_FILE:-book.bin}
       OPENING_EXPLORER: ${OPENING_EXPLORER:-lichess}
       LICHESS_TOKEN: ${LICHESS_TOKEN:-}
+      SYZYGY_PATH: /syzygy
     volumes:
       - analyzer-data:/data
+      # Polyglot opening book and Syzygy tablebases; see README.md. Both are
+      # optional: without them the engine analyses every position.
+      - ./books:/books
+      - ./syzygy:/syzygy
     # Only reachable through Caddy or the tunnel. For a quick LAN test,
     # uncomment this and open http://<pi-ip>:8000.
     # ports:

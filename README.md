@@ -30,8 +30,14 @@ Chess Game Analyzer downloads your recent games from Chess.com, runs Stockfish o
 
 1. **Fetch the games.** Games come from the free [Chess.com Public API](https://www.chess.com/news/view/published-data-api), which needs no authentication (`chess_analyzer.fetch`). Chess variants such as Chess960 are skipped.
 2. **Parse the PGNs.** [`python-chess`](https://python-chess.readthedocs.io/) reads the PGN and replays the game (`chess_analyzer.parse`).
-3. **Run the engine.** Stockfish evaluates every position over UCI for a fixed time or depth (`chess_analyzer.engine`). Each move's centipawn loss is the drop in evaluation for the side that moved. Evaluations are capped at ±10 pawns, so going from "mate in 5" to "+15" does not count as a blunder. A loss of 50 centipawns or more is an inaccuracy, 100 or more a mistake, and 300 or more a blunder.
-4. **Check the opening.** The game's first moves are compared with a local [Polyglot](https://www.chessprogramming.org/PolyGlot) book (`.bin`) or the [Lichess Opening Explorer](https://lichess.org/api#tag/Opening-Explorer) (`chess_analyzer.openings`). The first move that is not in the book is reported, along with the book alternatives, ranked by how well they score for the side to move.
+3. **Check the opening.** The game's first 15 moves are compared with a local [Polyglot](https://www.chessprogramming.org/PolyGlot) book (`.bin`) or the [Lichess Opening Explorer](https://lichess.org/api#tag/Opening-Explorer) (`chess_analyzer.openings`). The first move that is not in the book is reported, along with the book alternatives, ranked by how well they score for the side to move.
+4. **Evaluate the moves, using the engine as little as possible** (`chess_analyzer.engine`). Each position is handled by the cheapest source that can answer it:
+   - **Opening book:** moves before the deviation are theory. They are marked *Book* and are not evaluated. The deviating move itself is still judged by the engine.
+   - **Endgame tablebases:** positions with 5 pieces or fewer are looked up in the [Syzygy](https://syzygy-tables.info/) tablebases. That gives the exact result (win, draw or loss) and the best move with no search. Stockfish also uses the tablebases inside its own search.
+   - **Forced moves:** a position with only one legal move takes the evaluation of the position after it.
+   - **Stockfish** searches everything else to depth 16 by default. It uses Stockfish 16 or later (the Docker image builds 17.1), which evaluates positions with its NNUE neural network.
+
+   Each move's centipawn loss is the drop in evaluation for the side that moved. Evaluations are capped at ±10 pawns, so going from "mate in 5" to "+15" does not count as a blunder. A loss of 50 centipawns or more is an inaccuracy, 100 or more a mistake, and 300 or more a blunder. Book and forced moves don't count towards the average centipawn loss.
 
 ## Installation ⚙️
 
@@ -67,7 +73,10 @@ Some useful options:
 | `--max-games N` | Analyse at most N games (default 5). |
 | `--time-class blitz` | Only analyse `bullet`, `blitz`, `rapid` or `daily` games. |
 | `--pgn FILE` | Analyse games from a local PGN file instead of downloading them. |
-| `--time 0.5` / `--depth 18` | Engine time in seconds per position, or a fixed search depth. |
+| `--depth 16` / `--max-time 15` | Search depth per position (default 16), and the most seconds a single search may take. |
+| `--time 0.5` | Search each position for a fixed time instead of to a depth. |
+| `--threads N` | Engine threads (default: CPU cores minus one). |
+| `--syzygy DIR` | Syzygy tablebase directory (default: `$SYZYGY_PATH`). |
 | `--no-engine` | Only run the opening check. |
 | `--book FILE` | Use a local Polyglot opening book instead of the Lichess explorer. |
 | `--explorer lichess\|masters\|none` | Lichess explorer database to use, or `none` to skip the opening check. |
@@ -87,10 +96,12 @@ Opening
   Book moves in that position:
     g6       55% score over 200 games
 
-Black: average centipawn loss 340
-  2 best, 0 good, 0 inaccuracy, 0 mistake, 1 blunder
+Black: average centipawn loss 1020
+  2 book, 0 forced, 0 best, 0 good, 0 inaccuracy, 0 mistake, 1 blunder
   Biggest mistakes:
     3...Nf6      blunder  -0.20 -> +M1  best was g6
+
+Engine searched 2 of 8 positions (5 book, 1 terminal).
 ```
 
 The modules can also be used from Python:
@@ -137,21 +148,31 @@ The server is configured with environment variables:
 | Variable | Default | Description |
 | --- | --- | --- |
 | `ACCESS_CODE` | *(empty)* | When set, fetching games and starting analyses require this code. Shared analysis links work without it. |
-| `ANALYSIS_TIME` | `0.3` | Engine seconds per position. |
-| `ANALYSIS_DEPTH` | *(empty)* | Fixed search depth instead of `ANALYSIS_TIME`. |
+| `ANALYSIS_DEPTH` | `16` | Search depth per position. `0` searches for `ANALYSIS_TIME` seconds instead. |
+| `ANALYSIS_MAX_TIME` | `15` | The most seconds a single search to `ANALYSIS_DEPTH` may take. |
+| `ANALYSIS_TIME` | *(empty)* | Seconds per position when `ANALYSIS_DEPTH` is `0`. |
 | `STOCKFISH_PATH` | `stockfish` on `PATH` | Stockfish binary. |
-| `STOCKFISH_THREADS` / `STOCKFISH_HASH` | `1` / `64` | Engine threads and hash size (MB). |
+| `STOCKFISH_THREADS` | CPU cores minus one | Engine threads per worker. |
+| `STOCKFISH_HASH` | `128` | Engine hash size (MB). |
+| `ENGINE_NICE` | `10` | Lowers the engine's CPU priority (0–19) so the system stays responsive. |
+| `SYZYGY_PATH` | *(empty)* | Directory with Syzygy tablebases. |
 | `WORKERS` | `1` | Games analysed in parallel. |
 | `MAX_QUEUE` | `20` | Maximum number of waiting analyses. |
 | `OPENING_EXPLORER` | `lichess` | `lichess`, `masters` or `none`. |
-| `OPENING_BOOK` | *(empty)* | Polyglot book to use instead of the explorer. |
+| `OPENING_BOOK` | *(empty)* | Polyglot book to use instead of the explorer, when the file exists. |
 | `LICHESS_TOKEN` | *(empty)* | Lichess API token for the explorer. |
 | `DATA_DIR` | `data` | Where the SQLite database of analyses is kept. |
 | `HOST` / `PORT` | `127.0.0.1` / `8000` | Address to listen on. |
 
 ## Self-hosting on a Raspberry Pi 🍓
 
-The Docker image runs on 64-bit Raspberry Pi OS (arm64) as well as on x86-64 machines, and includes Stockfish. A Raspberry Pi 4 or 5 analyses a 40-move game in about half a minute with the default settings.
+The Docker image runs on 64-bit Raspberry Pi OS (arm64) as well as on x86-64 machines. It includes Stockfish 17.1, built from source with its NNUE networks embedded. The image is set up to be gentle on a Pi:
+
+- Stockfish uses all cores but one (3 on a Pi 4 or 5) and runs at lower priority, so the Pi stays responsive and has some thermal headroom.
+- Each position is searched to depth 16, so a slow CPU takes longer but doesn't analyse less deeply. A search stops after 15 seconds if depth 16 still hasn't been reached.
+- One game is analysed at a time; other requests wait in a queue. Book moves, tablebase endgames and forced moves skip the engine entirely, and a finished game is never analysed twice.
+
+Expect roughly one to three minutes per game on a Pi 4 or 5. That's an estimate: it hasn't been measured on a real Pi, and it depends heavily on the game.
 
 1. Install Docker on the Pi (`curl -fsSL https://get.docker.com | sh`) and clone this repository.
 2. Create the configuration and set an access code for your friends:
@@ -161,12 +182,22 @@ The Docker image runs on 64-bit Raspberry Pi OS (arm64) as well as on x86-64 mac
    nano .env
    ```
 
-3. Choose how the site is reached from the internet. Both options give you HTTPS on `chess.akkerman.ai`:
+3. Optionally, add an opening book and endgame tablebases. Without them everything still works, but Stockfish has to analyse every position.
+
+   ```bash
+   mkdir -p books syzygy
+   # Syzygy 3-4-5 piece tablebases, about 940 MB (add --wdl-only for 380 MB):
+   docker compose run --rm app chess-analyzer-syzygy --dir /syzygy
+   ```
+
+   For the opening book, put any Polyglot book in `books/book.bin` (or set `OPENING_BOOK_FILE`). Without a book, the Lichess explorer is used for the opening, which needs internet access but no disk space.
+
+4. Choose how the site is reached from the internet. Both options give you HTTPS on `chess.akkerman.ai`:
 
    - **Caddy** (`COMPOSE_PROFILES=caddy`, the default). Add a DNS `A` record for `chess.akkerman.ai` pointing to your home IP address, and forward ports 80 and 443 on your router to the Pi. Caddy gets a Let's Encrypt certificate on its own.
    - **Cloudflare Tunnel** (`COMPOSE_PROFILES=tunnel`). Use this if you can't or don't want to open ports, or if your home IP address changes. It requires the domain's DNS to be on Cloudflare. In the Cloudflare dashboard, go to *Zero Trust → Networks → Tunnels*, create a tunnel and add the public hostname `chess.akkerman.ai` with service `http://app:8000`. Then put the tunnel token in `CLOUDFLARE_TUNNEL_TOKEN`.
 
-4. Start it:
+5. Start it:
 
    ```bash
    docker compose up -d
@@ -174,7 +205,7 @@ The Docker image runs on 64-bit Raspberry Pi OS (arm64) as well as on x86-64 mac
 
    This pulls the image that GitHub Actions publishes to `ghcr.io/stephanakkerman/chess-game-analyzer` for every push to `main`. If that package is private, run `docker login ghcr.io` first, or make the package public in its GitHub settings. You can also build the image on the Pi with `docker compose up -d --build`.
 
-To update, run `docker compose pull && docker compose up -d`. Analyses are kept in the `analyzer-data` volume.
+To update, run `docker compose pull && docker compose up -d`. Analyses are kept in the `analyzer-data` volume. On a Raspberry Pi 5 you can build a faster engine with `STOCKFISH_ARCH=armv8-dotprod` in `.env` and `docker compose up -d --build`.
 
 ## Citation ✍️
 

@@ -44,6 +44,8 @@ def move_to_dict(move: MoveAnalysis) -> dict:
         "classification": move.classification,
         "fen_before": move.fen_before,
         "fen": move.fen_after,
+        "source": move.source,
+        "source_before": move.source_before,
     }
 
 
@@ -83,11 +85,14 @@ def result_to_dict(
     opening_checked: bool,
     opening_error: str | None,
     engine_label: str,
+    engine_name: str | None = None,
 ) -> dict:
     return {
         "headers": {k: game.headers[k] for k in HEADERS if k in game.headers},
         "start_fen": game.board().fen(),
         "engine": engine_label,
+        "engine_name": engine_name,
+        "positions": dict(analysis.sources),
         "opening": {
             "name": opening_name(game),
             "checked": opening_checked,

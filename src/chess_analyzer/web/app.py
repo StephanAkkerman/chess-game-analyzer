@@ -29,6 +29,8 @@ from chess_analyzer.web.service import (
     InvalidGame,
     OpeningFactory,
     QueueFull,
+    TablebaseFactory,
+    has_tablebases,
 )
 from chess_analyzer.web.settings import Settings
 from chess_analyzer.web.store import DONE, FAILED, Job, Store
@@ -83,6 +85,7 @@ def create_app(
     engine_factory: EngineFactory | None = None,
     opening_factory: OpeningFactory | None = None,
     chesscom: ChessComClient | None = None,
+    tablebase_factory: TablebaseFactory | None = None,
 ) -> FastAPI:
     """Build the app.
 
@@ -97,7 +100,9 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         store = Store(settings.data_dir / "analyses.db")
-        service = AnalysisService(settings, store, engine_factory, opening_factory)
+        service = AnalysisService(
+            settings, store, engine_factory, opening_factory, tablebase_factory
+        )
         service.start()
         app.state.store = store
         app.state.service = service
@@ -135,19 +140,13 @@ def create_app(
 
     @app.get("/api/config")
     def config() -> dict:
-        if settings.opening_book:
-            opening = "Polyglot book"
-        elif settings.opening_explorer == "masters":
-            opening = "Lichess masters explorer"
-        elif settings.opening_explorer == "lichess":
-            opening = "Lichess opening explorer"
-        else:
-            opening = None
         return {
             "version": __version__,
             "access_code_required": bool(settings.access_code),
             "engine": settings.engine_label,
-            "opening_source": opening,
+            "engine_name": app.state.service.engine_name,
+            "opening_source": settings.opening_label,
+            "tablebases": has_tablebases(settings.syzygy_path),
         }
 
     @app.get("/api/access", dependencies=[Depends(require_access)])

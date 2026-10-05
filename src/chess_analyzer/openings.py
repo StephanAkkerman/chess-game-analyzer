@@ -227,3 +227,18 @@ def find_deviation(
             )
         board.push(move)
     return None
+
+
+def book_plies(
+    game: chess.pgn.Game, deviation: OpeningDeviation | None, max_ply: int = 30
+) -> set[int]:
+    """Return the plies (1-based) that were opening theory.
+
+    These are the moves before ``deviation``, the result of
+    :func:`find_deviation` with the same ``max_ply``. They need no engine
+    analysis.
+    """
+    if deviation is not None:
+        return set(range(1, deviation.ply))
+    n = sum(1 for _ in game.mainline_moves())
+    return set(range(1, min(n, max_ply) + 1))

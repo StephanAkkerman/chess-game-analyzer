@@ -19,6 +19,7 @@ dependencies = [
 [project.scripts]
 chess-analyzer = "chess_analyzer.cli:main"
 chess-analyzer-web = "chess_analyzer.web.app:main"
+chess-analyzer-syzygy = "chess_analyzer.syzygy:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

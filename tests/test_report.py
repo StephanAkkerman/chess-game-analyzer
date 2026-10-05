@@ -35,6 +35,14 @@ def test_report_for_player(scholars_mate_pgn):
     assert "3...Nf6      blunder  -0.20 -> +M1  best was g6" in report
     # Only the requested side is reported.
     assert "White:" not in report
+    assert "Engine searched 7 of 8 positions (1 terminal)." in report
+
+
+def test_format_eval_for_book_and_tablebase():
+    assert format_eval(None) == "book"
+    assert format_eval(2000, "tablebase") == "TB 1-0"
+    assert format_eval(0, "tablebase") == "TB draw"
+    assert format_eval(-2000, "tablebase") == "TB 0-1"
 
 
 def test_report_without_opening_or_engine(scholars_mate_pgn):

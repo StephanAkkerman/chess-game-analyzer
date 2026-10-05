@@ -49,8 +49,13 @@ def test_analysis_round_trip(tmp_path, scholars_mate_pgn):
         job = wait_for(client, response.json()["id"])
 
     assert job["status"] == "done"
-    assert (job["done"], job["total"]) == (7, 7)
+    # Five book moves need no evaluation: only the three positions from the
+    # deviation on are looked at (the last one is checkmate).
+    assert (job["done"], job["total"]) == (3, 3)
     result = job["result"]
+    assert result["positions"] == {"book": 5, "engine": 2, "terminal": 1}
+    assert [m["classification"] for m in result["moves"][:5]] == ["book"] * 5
+    assert result["moves"][0]["eval_after"] is None
     assert result["headers"]["White"] == "Alice"
     assert result["opening"]["name"] == "Bishops Opening"
     assert result["opening"]["deviation"]["label"] == "3...Nf6"
@@ -60,7 +65,7 @@ def test_analysis_round_trip(tmp_path, scholars_mate_pgn):
     assert (nf6["uci"], nf6["best_uci"], nf6["best_san"]) == ("g8f6", "g7g6", "g6")
     assert result["moves"][-1]["fen"].startswith("r1bqkb1r/pppp1Qpp/")
     assert result["summary"]["black"]["worst"] == [6]
-    assert result["summary"]["white"]["counts"]["inaccuracy"] == 1
+    assert result["summary"]["white"]["counts"]["book"] == 3
 
 
 def test_same_game_is_analysed_once(tmp_path, scholars_mate_pgn):

@@ -21,6 +21,8 @@ const store = {
 };
 
 const CLASS_INFO = {
+  book: { label: "Book", sym: "" },
+  forced: { label: "Forced", sym: "" },
   best: { label: "Best", sym: "★" },
   good: { label: "Good", sym: "" },
   inaccuracy: { label: "Inaccuracy", sym: "?!" },
@@ -54,7 +56,9 @@ function svgEl(tag, attrs = {}) {
   return node;
 }
 
-function formatEval(cp) {
+function formatEval(cp, source) {
+  if (cp === null || cp === undefined) return "Book";
+  if (source === "tablebase") return cp > 0 ? "TB 1-0" : cp < 0 ? "TB 0-1" : "TB draw";
   if (Math.abs(cp) >= MATE - 500) {
     const moves = MATE - Math.abs(cp);
     const sign = cp > 0 ? "+" : "-";
@@ -66,6 +70,7 @@ function formatEval(cp) {
 
 // Lichess' win-probability curve: maps centipawns to -1..1.
 function winChance(cp) {
+  if (cp === null || cp === undefined) return 0;
   const capped = Math.max(-1500, Math.min(1500, cp));
   return 2 / (1 + Math.exp(-0.00368208 * capped)) - 1;
 }
@@ -207,7 +212,8 @@ function renderHome(initialUser) {
   getConfig().then((config) => {
     const info = document.getElementById("engine-info");
     if (!info || !config.engine) return;
-    const parts = [`Stockfish, ${config.engine}`];
+    const parts = [`${config.engine_name || "Stockfish"}, ${config.engine}`];
+    if (config.tablebases) parts.push("Syzygy tablebases");
     if (config.opening_source) parts.push(config.opening_source);
     info.textContent = parts.join(" · ");
   });
@@ -347,7 +353,7 @@ async function renderAnalysis(id) {
         ? `Waiting in line: ${job.queue_position} game${job.queue_position === 1 ? "" : "s"} ahead.`
         : "Starting…";
     } else {
-      status.textContent = `Stockfish is looking at move ${job.done} of ${job.total}.`;
+      status.textContent = `Analysed ${job.done} of ${job.total} positions.`;
     }
     fill.style.width = `${percent}%`;
     fill.parentElement.setAttribute("aria-valuenow", String(percent));
@@ -389,8 +395,13 @@ class AnalysisView {
     return ply > 0 ? this.moves[ply - 1].fen : this.result.start_fen;
   }
 
+  // Evaluations are null for opening-book positions, which are not analysed.
   evalAt(ply) {
-    return ply > 0 ? this.moves[ply - 1].eval_after : (this.moves[0]?.eval_before ?? 0);
+    return ply > 0 ? this.moves[ply - 1].eval_after : (this.moves[0]?.eval_before ?? null);
+  }
+
+  sourceAt(ply) {
+    return ply > 0 ? this.moves[ply - 1].source : null;
   }
 
   go(ply) {
@@ -549,11 +560,17 @@ class AnalysisView {
         { class: "headline" },
         el("span", { class: "move", text: `${move.label}${info.sym && info.sym !== "★" ? info.sym : ""}` }),
         el("span", { class: `pill cls-${move.classification}`, text: info.label }),
-        el("span", { class: "eval", text: formatEval(move.eval_after) }),
+        move.eval_after === null
+          ? null
+          : el("span", { class: "eval", text: formatEval(move.eval_after, move.source) }),
       ),
     ];
-    if (move.classification === "best") {
-      children.push(el("p", { class: "muted", text: "The engine's top choice." }));
+    if (move.classification === "book") {
+      children.push(el("p", { class: "muted", text: "Opening theory, so the engine skipped it." }));
+    } else if (move.classification === "forced") {
+      children.push(el("p", { class: "muted", text: "The only legal move." }));
+    } else if (move.classification === "best") {
+      children.push(el("p", { class: "muted", text: "The top choice." }));
     } else if (move.best_san) {
       // Losses are capped at 10 pawns per side, so huge swings read better as evals.
       const lost =
@@ -561,7 +578,7 @@ class AnalysisView {
           ? ` This cost ${(move.cp_loss / 100).toFixed(1)} pawns.`
           : "";
       children.push(
-        el("p", {}, "Best was ", el("strong", { text: move.best_san }), ` (${formatEval(move.eval_before)}).${lost}`),
+        el("p", {}, "Best was ", el("strong", { text: move.best_san }), ` (${formatEval(move.eval_before, move.source_before)}).${lost}`),
       );
       const toggle = el("button", {
         type: "button",
@@ -573,6 +590,9 @@ class AnalysisView {
         },
       });
       children.push(el("div", { class: "actions" }, toggle));
+    }
+    if (move.source === "tablebase") {
+      children.push(el("p", { class: "muted small", text: "Exact result from the endgame tablebase." }));
     }
     box.replaceChildren(...children);
   }
@@ -586,17 +606,38 @@ class AnalysisView {
     const n = this.moves.length;
     const x = (ply) => pad + ((width - 2 * pad) * ply) / Math.max(1, n);
     const y = (cp) => height / 2 - (height / 2 - pad) * winChance(cp);
-    const points = [];
-    for (let ply = 0; ply <= n; ply++) points.push([x(ply), y(this.evalAt(ply))]);
-    const line = points.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join("");
-    const area = `${line}L${x(n)},${height / 2}L${x(0)},${height / 2}Z`;
+    // Book positions have no evaluation: the line has gaps there.
+    const segments = [];
+    let current = null;
+    for (let ply = 0; ply <= n; ply++) {
+      const cp = this.evalAt(ply);
+      if (cp === null || cp === undefined) {
+        current = null;
+        continue;
+      }
+      if (!current) segments.push((current = []));
+      current.push([x(ply), y(cp)]);
+    }
+    const toPath = (pts) => pts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join("");
+    const line = segments.map(toPath).join("");
+    const area = segments
+      .map((pts) => `${toPath(pts)}L${pts.at(-1)[0]},${height / 2}L${pts[0][0]},${height / 2}Z`)
+      .join("");
 
-    const nodes = [
-      svgEl("line", { class: "zero", x1: 0, x2: width, y1: height / 2, y2: height / 2 }),
+    const nodes = [svgEl("line", { class: "zero", x1: 0, x2: width, y1: height / 2, y2: height / 2 })];
+    let bookEnd = 0;
+    while (bookEnd < n && this.moves[bookEnd].classification === "book") bookEnd++;
+    if (bookEnd > 0) {
+      nodes.push(svgEl("rect", { class: "book-band", x: x(0), y: 0, width: x(bookEnd) - x(0), height }));
+      const label = svgEl("text", { class: "book-label", x: x(0) + 4, y: 14 });
+      label.textContent = "Book";
+      nodes.push(label);
+    }
+    nodes.push(
       svgEl("path", { class: "area", d: area }),
       svgEl("path", { class: "line", d: line }),
       svgEl("line", { class: "cursor", x1: x(this.ply), x2: x(this.ply), y1: 0, y2: height }),
-    ];
+    );
     for (const move of this.moves) {
       if (["inaccuracy", "mistake", "blunder"].includes(move.classification)) {
         const marker = svgEl("circle", {
@@ -614,7 +655,7 @@ class AnalysisView {
     svg.replaceChildren(...nodes);
     svg.setAttribute(
       "aria-label",
-      `Evaluation graph. Current position ${formatEval(this.evalAt(this.ply))}.`,
+      `Evaluation graph. Current position ${formatEval(this.evalAt(this.ply), this.sourceAt(this.ply))}.`,
     );
   }
 
@@ -773,10 +814,22 @@ class AnalysisView {
   renderMeta() {
     const h = this.result.headers;
     const meta = document.getElementById("game-meta");
-    const parts = [h.Date, h.Result, h.Termination, `Stockfish ${this.result.engine}`].filter(
-      (p) => p && !p.includes("?"),
-    );
+    const parts = [h.Date, h.Result, h.Termination].filter((p) => p && !p.includes("?"));
     meta.replaceChildren(parts.join(" · "));
+    const engine = `${this.result.engine_name || "Stockfish"}, ${this.result.engine}`;
+    meta.append(el("br"), engine);
+    const positions = this.result.positions;
+    if (positions) {
+      const total = Object.values(positions).reduce((a, b) => a + b, 0);
+      const skipped = ["book", "tablebase", "forced"]
+        .filter((k) => positions[k])
+        .map((k) => `${positions[k]} ${k}`);
+      meta.append(
+        el("br"),
+        `Engine searched ${positions.engine ?? 0} of ${total} positions` +
+          (skipped.length ? ` (${skipped.join(", ")})` : ""),
+      );
+    }
     if (h.Link && /^https:\/\//.test(h.Link)) {
       meta.append(el("br"), el("a", { href: h.Link, target: "_blank", rel: "noopener", text: "View on Chess.com" }));
     }
