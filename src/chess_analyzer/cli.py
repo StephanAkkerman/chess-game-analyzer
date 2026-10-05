@@ -16,6 +16,7 @@ from chess_analyzer.engine import (
     DEFAULT_MAX_TIME,
     analyze_game,
     default_threads,
+    describe_limit,
     find_engine,
     make_limit,
     open_engine,
@@ -30,7 +31,9 @@ from chess_analyzer.openings import (
     find_deviation,
 )
 from chess_analyzer.parse import player_color, read_games
-from chess_analyzer.report import format_game_report
+from chess_analyzer.report import format_game_report, format_player_stats
+from chess_analyzer.serialize import result_to_dict
+from chess_analyzer.stats import game_record, player_stats
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -188,6 +191,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         source = open_opening_source(args, stack)
 
+        records = []
         for i, game in enumerate(games):
             color = player_color(game, args.username)
             deviation = (
@@ -209,6 +213,21 @@ def main(argv: list[str] | None = None) -> int:
                     game, color, analysis, deviation, show_opening=source is not None
                 )
             )
+            if analysis is not None:
+                result = result_to_dict(
+                    game,
+                    analysis,
+                    deviation,
+                    opening_checked=source is not None,
+                    opening_error=None,
+                    engine_label=describe_limit(limit),
+                )
+                if record := game_record(result, args.username):
+                    records.append(record)
+
+        if len(records) > 1:
+            print("\n" + "=" * 72 + "\n")
+            print(format_player_stats(player_stats(records), args.username))
     return 0
 
 

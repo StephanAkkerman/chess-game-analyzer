@@ -36,7 +36,7 @@ from chess_analyzer.openings import (
     find_deviation,
 )
 from chess_analyzer.parse import read_games
-from chess_analyzer.web.serialize import result_to_dict
+from chess_analyzer.serialize import result_to_dict
 from chess_analyzer.web.settings import Settings
 from chess_analyzer.web.store import DONE, FAILED, Job, Store
 
@@ -45,6 +45,11 @@ log = logging.getLogger(__name__)
 EngineFactory = Callable[[], chess.engine.SimpleEngine]
 OpeningFactory = Callable[[], OpeningSource | None]
 TablebaseFactory = Callable[[], Tablebase | None]
+
+
+# Part of the key that identifies an analysis. Raise it when results gain new
+# information, so games are analysed again rather than served from old results.
+ANALYSIS_VERSION = 2
 
 
 class InvalidGame(ValueError):
@@ -78,6 +83,7 @@ def game_key(game: chess.pgn.Game, settings: Settings) -> str:
     """Identify a game and engine configuration, to reuse earlier results."""
     moves = " ".join(m.uci() for m in game.mainline_moves())
     parts = [
+        f"v{ANALYSIS_VERSION}",
         game.board().fen(),
         moves,
         game.headers.get("Link", ""),

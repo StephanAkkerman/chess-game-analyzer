@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from chess_analyzer import __version__
 from chess_analyzer.fetch import ChessComClient
+from chess_analyzer.stats import game_record, player_stats
 from chess_analyzer.web.service import (
     AnalysisService,
     EngineFactory,
@@ -182,6 +183,16 @@ def create_app(
             "username": username,
             "games": [game_summary(g, username) for g in games[:limit]],
         }
+
+    @app.get("/api/players/{username}/stats", dependencies=[Depends(require_access)])
+    def player_statistics(username: str) -> dict:
+        """Trends and weaknesses across the player's analysed games."""
+        records = [
+            record
+            for job_id, result in app.state.store.results_for_player(username)
+            if (record := game_record(result, username, job_id))
+        ]
+        return {"username": username, **player_stats(records)}
 
     @app.post("/api/analyses", status_code=202, dependencies=[Depends(require_access)])
     def create_analysis(request: AnalysisRequest) -> dict:

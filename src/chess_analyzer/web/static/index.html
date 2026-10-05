@@ -59,9 +59,23 @@
       </form>
     </section>
 
+    <section id="progress" class="card" hidden>
+      <h2>Your progress</h2>
+      <p class="muted small" id="progress-status"></p>
+      <div id="progress-body" hidden>
+        <svg id="trend" class="graph trend" role="img" aria-label="Average centipawn loss per game"></svg>
+        <p class="muted small" id="trend-caption"></p>
+        <ul id="insights" class="insights"></ul>
+        <div id="progress-details" class="progress-details"></div>
+      </div>
+    </section>
+
     <section id="games" class="card" hidden>
       <h2 id="games-title">Recent games</h2>
       <p class="muted small" id="games-status"></p>
+      <div class="row end" id="analyse-all-row" hidden>
+        <button type="button" id="analyse-all">Analyse the 10 most recent</button>
+      </div>
       <ul id="game-list" class="game-list"></ul>
     </section>
 

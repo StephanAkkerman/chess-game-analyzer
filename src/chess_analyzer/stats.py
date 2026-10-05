@@ -1,0 +1,328 @@
+"""Find trends and recurring weaknesses across a player's analysed games.
+
+Works on analysis results as produced by
+:func:`chess_analyzer.serialize.result_to_dict`, so the same code serves the
+command line and the web app's stored analyses.
+"""
+
+from __future__ import annotations
+
+from collections import Counter
+
+from chess_analyzer.insights import (
+    CATEGORIES,
+    CATEGORY_LABELS,
+    IMPULSIVE,
+    PHASES,
+    POSITIONAL,
+    TIME_FLAGS,
+    TIME_TROUBLE,
+    WASTED_TIME,
+)
+
+# A trend needs at least this many games, and the average centipawn loss of
+# the recent half must differ by this much from the older half.
+TREND_GAMES = 4
+TREND_CHANGE = 5
+# Leaving book by this move means the opening needs work; staying in book
+# past LATE_DEVIATION means the time is better spent on the middlegame.
+EARLY_DEVIATION = 6
+LATE_DEVIATION = 12
+# Minimum mistakes before naming the most common kind, and moves per phase
+# before comparing phases.
+MIN_ERRORS = 3
+MIN_PHASE_MOVES = 10
+# A kind of mistake, or a time problem, is named when it accounts for at
+# least this share of the mistakes and blunders.
+NOTABLE_SHARE = 0.25
+# Words that end the name of an opening family, as in "Sicilian Defense
+# Najdorf Variation".
+FAMILY_WORDS = ("Defense", "Defence", "Game", "Opening", "Gambit", "Attack", "System")
+
+CATEGORY_ADVICE = {
+    "allowed_mate": "check your opponent's checks and threats against your "
+    "king before every move",
+    "missed_mate": "practise mating patterns",
+    "hung_piece": "before each move, check which of your pieces it leaves "
+    "undefended",
+    "refuted_attack": "calculate attacks and sacrifices further before "
+    "committing to them",
+    "allowed_tactic": "before each move, look for your opponent's checks and "
+    "captures in reply",
+    "conversion": "practise converting winning endgames",
+    "missed_tactic": "solve tactics puzzles to spot forcing moves",
+    "positional": "study plans and pawn structures",
+}
+
+
+def opening_family(name: str) -> str:
+    """Shorten an opening name to its family, e.g. ``Sicilian Defense``.
+
+    Chess.com names openings down to the variation, which would put almost
+    every game in a group of its own.
+    """
+    name = name.split(":")[0].strip()
+    words = name.split()
+    for i, word in enumerate(words[1:], start=1):
+        if word in FAMILY_WORDS:
+            return " ".join(words[: i + 1])
+    return name
+
+
+def _result_for(result: str, color: str) -> str | None:
+    if result == "1/2-1/2":
+        return "draw"
+    if result in ("1-0", "0-1"):
+        white_won = result == "1-0"
+        return "win" if white_won == (color == "white") else "loss"
+    return None
+
+
+def game_record(
+    result: dict, username: str, analysis_id: str | None = None
+) -> dict | None:
+    """Extract what the trend statistics need from one analysis result.
+
+    Returns ``None`` if ``username`` did not play the game.
+    """
+    headers = result.get("headers", {})
+    name = username.lower()
+    if headers.get("White", "").lower() == name:
+        color, opponent = "white", headers.get("Black")
+    elif headers.get("Black", "").lower() == name:
+        color, opponent = "black", headers.get("White")
+    else:
+        return None
+    summary = result["summary"][color]
+    opening = result.get("opening") or {}
+    deviation = opening.get("deviation")
+    left_book = None
+    opponent_left_book = None
+    if deviation:
+        move = (deviation["ply"] + 1) // 2
+        if deviation["color"] == color:
+            left_book = move
+        else:
+            opponent_left_book = move
+    date = headers.get("UTCDate") or headers.get("Date", "")
+    return {
+        "id": analysis_id,
+        "date": date.replace(".", "-") if "?" not in date else "",
+        "utc_time": headers.get("UTCTime", ""),
+        "color": color,
+        "opponent": opponent,
+        "result": _result_for(headers.get("Result", ""), color),
+        "acpl": summary["acpl"],
+        "opening": opening.get("name"),
+        "opening_checked": opening.get("checked", False),
+        "left_book": left_book,
+        "opponent_left_book": opponent_left_book,
+        "link": headers.get("Link"),
+        "categories": summary.get("categories") or {},
+        "phases": summary.get("phases") or {},
+        "time": summary.get("time"),
+    }
+
+
+def _trend(acpls: list[int]) -> dict | None:
+    if len(acpls) < TREND_GAMES:
+        return None
+    half = len(acpls) // 2
+    older = sum(acpls[:half]) / half
+    recent = sum(acpls[-half:]) / half
+    change = recent - older
+    if change <= -TREND_CHANGE:
+        direction = "improving"
+    elif change >= TREND_CHANGE:
+        direction = "worsening"
+    else:
+        direction = "steady"
+    return {
+        "direction": direction,
+        "older": round(older),
+        "recent": round(recent),
+        "games": half,
+    }
+
+
+def _openings(records: list[dict]) -> list[dict]:
+    groups: dict[tuple[str, str], list[dict]] = {}
+    for r in records:
+        if r["opening"] and r["opening_checked"]:
+            key = (opening_family(r["opening"]), r["color"])
+            groups.setdefault(key, []).append(r)
+    openings = []
+    for (name, color), games in groups.items():
+        left = [g["left_book"] for g in games if g["left_book"] is not None]
+        results = [g["result"] for g in games if g["result"]]
+        score = (
+            (results.count("win") + 0.5 * results.count("draw")) / len(results)
+            if results
+            else None
+        )
+        average = sum(left) / len(left) if left else None
+        if average is None:
+            advice = None
+        elif average <= EARLY_DEVIATION:
+            advice = "study"
+        elif average >= LATE_DEVIATION:
+            advice = "middlegame"
+        else:
+            advice = None
+        openings.append(
+            {
+                "name": name,
+                "color": color,
+                "games": len(games),
+                "left_book": round(average, 1) if average is not None else None,
+                "you_left": len(left),
+                "opponent_left": sum(
+                    g["opponent_left_book"] is not None for g in games
+                ),
+                "score": score,
+                "acpl": round(sum(g["acpl"] for g in games) / len(games)),
+                "advice": advice,
+            }
+        )
+    return sorted(openings, key=lambda o: (-o["games"], o["name"]))
+
+
+def _phases(records: list[dict]) -> dict[str, dict]:
+    totals: dict[str, list[float]] = {}
+    for r in records:
+        for phase, data in r["phases"].items():
+            loss, moves = totals.setdefault(phase, [0.0, 0])
+            totals[phase] = [loss + data["acpl"] * data["moves"], moves + data["moves"]]
+    return {
+        phase: {
+            "acpl": round(totals[phase][0] / totals[phase][1]),
+            "moves": totals[phase][1],
+        }
+        for phase in PHASES
+        if phase in totals and totals[phase][1]
+    }
+
+
+def _time(records: list[dict]) -> dict | None:
+    timed = [r["time"] for r in records if r["time"]]
+    if not timed:
+        return None
+    moves = sum(t["moves"] for t in timed)
+    return {
+        "games": len(timed),
+        "moves": moves,
+        "average": round(sum(t["average"] * t["moves"] for t in timed) / moves, 1),
+        "errors": sum(t["errors"] for t in timed),
+        **{flag: sum(t.get(flag, 0) for t in timed) for flag in TIME_FLAGS},
+    }
+
+
+def _insights(stats: dict) -> list[str]:
+    """Describe the player's clearest weaknesses in plain sentences."""
+    lines = []
+    trend = stats["trend"]
+    if trend and trend["direction"] != "steady":
+        verb = "fell" if trend["direction"] == "improving" else "rose"
+        lines.append(
+            f"Your average centipawn loss {verb} from {trend['older']} in your "
+            f"earlier games to {trend['recent']} in your {trend['games']} most "
+            "recent ones."
+        )
+
+    phases = {p: d for p, d in stats["phases"].items() if d["moves"] >= MIN_PHASE_MOVES}
+    if len(phases) >= 2:
+        worst = max(phases, key=lambda p: phases[p]["acpl"])
+        others = [d["acpl"] for p, d in phases.items() if p != worst]
+        if phases[worst]["acpl"] >= 1.5 * max(others) and phases[worst]["acpl"] >= 30:
+            lines.append(
+                f"You lose the most in the {worst} (average centipawn loss "
+                f"{phases[worst]['acpl']}, against {max(others)} at most "
+                f"elsewhere)."
+            )
+
+    categories = stats["categories"]
+    total = sum(categories.values())
+    if total >= MIN_ERRORS:
+        # Positional errors are what is left when no tactic explains the
+        # mistake, which is too vague to act on.
+        named = [c for c in CATEGORIES if c != POSITIONAL]
+        common = max(named, key=lambda c: categories.get(c, 0))
+        share = categories.get(common, 0) / total
+        if share >= NOTABLE_SHARE:
+            lines.append(
+                f"The most common kind of mistake ({share:.0%} of your mistakes "
+                f'and blunders) is "{CATEGORY_LABELS[common]}": '
+                f"{CATEGORY_ADVICE[common]}."
+            )
+
+    time = stats["time"]
+    if time and time["errors"] >= MIN_ERRORS:
+        if time[TIME_TROUBLE] / time["errors"] >= NOTABLE_SHARE:
+            lines.append(
+                f"{time[TIME_TROUBLE]} of your {time['errors']} mistakes and "
+                "blunders came with less than 10% of your time left: your "
+                "problem is time management, not chess knowledge."
+            )
+        if time[IMPULSIVE] / time["errors"] >= NOTABLE_SHARE:
+            lines.append(
+                f"{time[IMPULSIVE]} of your {time['errors']} mistakes and "
+                "blunders were played in under 3 seconds: slow down and "
+                "calculate before moving."
+            )
+    if time and time[WASTED_TIME] >= 2:
+        lines.append(
+            f"You spent a long time on {time[WASTED_TIME]} obvious moves, such "
+            "as recaptures and forced moves."
+        )
+
+    for opening in stats["openings"]:
+        if opening["you_left"] < 2 or opening["advice"] is None:
+            continue
+        side = f"{opening['name']} as {opening['color']}"
+        if opening["advice"] == "study":
+            lines.append(
+                f"You leave book early in the {side} (move "
+                f"{opening['left_book']:g} on average): study this opening."
+            )
+        else:
+            lines.append(
+                f"You know the {side} well (book until move "
+                f"{opening['left_book']:g} on average): study its typical "
+                "middlegame plans and pawn structures instead."
+            )
+    return lines
+
+
+def player_stats(records: list[dict]) -> dict:
+    """Combine game records from :func:`game_record` into overall statistics.
+
+    Returns
+    -------
+    dict
+        ``games`` (oldest first, for the trendline), ``acpl``, ``trend``,
+        ``openings``, ``categories``, ``phases``, ``time`` and ``insights``,
+        a list of sentences naming the clearest weaknesses.
+    """
+    records = sorted(records, key=lambda r: (r["date"], r["utc_time"]))
+    acpls = [r["acpl"] for r in records]
+    categories: Counter = Counter()
+    for r in records:
+        categories.update(r["categories"])
+    stats = {
+        "games": [
+            {
+                k: r[k]
+                for k in ("id", "date", "color", "opponent", "result", "acpl")
+                + ("opening", "link")
+            }
+            for r in records
+        ],
+        "acpl": round(sum(acpls) / len(acpls)) if acpls else None,
+        "trend": _trend(acpls),
+        "openings": _openings(records),
+        "categories": {c: categories[c] for c in CATEGORIES if categories[c]},
+        "phases": _phases(records),
+        "time": _time(records),
+    }
+    stats["insights"] = _insights(stats)
+    return stats

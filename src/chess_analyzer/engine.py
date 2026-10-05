@@ -22,6 +22,8 @@ import chess.engine
 import chess.pgn
 import chess.syzygy
 
+from chess_analyzer import insights
+
 # Mate scores are mapped to this many centipawns.
 MATE_SCORE = 10_000
 # Evaluations are capped at this value before computing centipawn loss, so that
@@ -30,6 +32,8 @@ EVAL_CAP = 1_000
 # Tablebase wins and losses. Above EVAL_CAP so they count fully in losses, but
 # well below MATE_SCORE so they are not shown as a mate.
 TABLEBASE_WIN = 2_000
+# Scores at least this large are forced mates.
+MATE_THRESHOLD = MATE_SCORE - 500
 
 INACCURACY = 50
 MISTAKE = 100
@@ -89,6 +93,12 @@ class MoveAnalysis:
     Evaluations are in centipawns from White's point of view, or ``None`` for
     book positions that were never evaluated. ``source`` and
     ``source_before`` say how ``eval_after`` and ``eval_before`` were obtained.
+
+    ``reply_uci`` and ``reply_san`` give the opponent's best reply, ``phase``
+    the game phase and ``category`` what kind of error a mistake or blunder
+    was (see :mod:`chess_analyzer.insights`). ``clock`` and ``time_spent``
+    come from the PGN's clock comments, in seconds; ``time_flag`` marks moves
+    that point to a time-management problem.
     """
 
     ply: int
@@ -105,6 +115,13 @@ class MoveAnalysis:
     fen_after: str = ""
     source: str = ENGINE
     source_before: str = ENGINE
+    reply_uci: str = ""
+    reply_san: str = ""
+    phase: str = ""
+    category: str = ""
+    clock: float | None = None
+    time_spent: float | None = None
+    time_flag: str = ""
 
     @property
     def move_number(self) -> int:
@@ -153,6 +170,42 @@ class GameAnalysis:
             if m.classification in ("mistake", "blunder")
         ]
         return sorted(bad, key=lambda m: m.cp_loss, reverse=True)[:n]
+
+    def categories(self, color: chess.Color) -> Counter:
+        """Count the kinds of mistakes and blunders ``color`` made."""
+        return Counter(m.category for m in self.for_color(color) if m.category)
+
+    def phase_cp_loss(self, color: chess.Color) -> dict[str, tuple[float, int]]:
+        """Return the average centipawn loss and move count per game phase.
+
+        Book and forced moves are left out, as in :meth:`average_cp_loss`.
+        """
+        losses: dict[str, list[int]] = {}
+        for m in self.for_color(color):
+            if m.classification not in ("book", "forced") and m.phase:
+                losses.setdefault(m.phase, []).append(m.cp_loss)
+        return {
+            phase: (sum(losses[phase]) / len(losses[phase]), len(losses[phase]))
+            for phase in insights.PHASES
+            if phase in losses
+        }
+
+    def time_summary(self, color: chess.Color) -> dict | None:
+        """Summarise how ``color`` used the clock, or ``None`` without clocks.
+
+        Counts the moves with each time flag, and the mistakes and blunders
+        in total, so the share made in time trouble can be computed.
+        """
+        timed = [m for m in self.for_color(color) if m.time_spent is not None]
+        if not timed:
+            return None
+        flags = Counter(m.time_flag for m in timed if m.time_flag)
+        return {
+            "moves": len(timed),
+            "average": sum(m.time_spent for m in timed) / len(timed),
+            "errors": sum(m.classification in ("mistake", "blunder") for m in timed),
+            **{flag: flags.get(flag, 0) for flag in insights.TIME_FLAGS},
+        }
 
 
 class Tablebase(Protocol):
@@ -413,18 +466,19 @@ def analyze_game(
         if on_progress is not None:
             on_progress(done, total)
 
+    times, base = insights.move_times(game)
     analysis = GameAnalysis(sources=Counter(e.source if e else BOOK for e in evals))
     for ply, move in enumerate(moves, start=1):
         before, after = evals[ply - 1], evals[ply]
         board = boards[ply - 1]
         color = board.turn
+        sign = 1 if color == chess.WHITE else -1
         if ply in book or before is None or after is None:
             classification, cp_loss, best = "book", 0, None
         elif before.source == FORCED:
             classification, cp_loss, best = "forced", 0, move
         else:
             best = before.best
-            sign = 1 if color == chess.WHITE else -1
             # Playing the evaluator's own choice costs nothing; any difference
             # between two searches is just noise.
             cp_loss = (
@@ -433,6 +487,19 @@ def analyze_game(
                 else max(0, sign * (_cap(before.score) - _cap(after.score)))
             )
             classification = classify(cp_loss, move == best)
+        reply = after.best if after else None
+        category = ""
+        if classification in ("mistake", "blunder"):
+            category = insights.categorize(
+                board,
+                move,
+                best,
+                reply,
+                sign * before.score,
+                sign * after.score,
+                MATE_THRESHOLD,
+            )
+        time = times[ply - 1]
         analysis.moves.append(
             MoveAnalysis(
                 ply=ply,
@@ -449,6 +516,15 @@ def analyze_game(
                 fen_after=boards[ply].fen(),
                 source=after.source if after else BOOK,
                 source_before=before.source if before else BOOK,
+                reply_uci=reply.uci() if reply else "",
+                reply_san=boards[ply].san(reply) if reply else "",
+                phase=insights.game_phase(board),
+                category=category,
+                clock=time.clock if time else None,
+                time_spent=time.spent if time else None,
+                time_flag=insights.time_flag(
+                    classification, time, base, insights.is_obvious(board, move)
+                ),
             )
         )
     return analysis

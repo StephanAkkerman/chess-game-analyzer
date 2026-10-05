@@ -29,6 +29,30 @@ const CLASS_INFO = {
   mistake: { label: "Mistake", sym: "?" },
   blunder: { label: "Blunder", sym: "??" },
 };
+// What kind of error a mistake or blunder was. `who` is the side that
+// replies, as "You", "Your opponent", "White" or "Black".
+const CATEGORY_INFO = {
+  allowed_mate: {
+    label: "Allowed mate",
+    text: (m, who) => `${who} can force mate${m.reply_san ? `, starting with ${m.reply_san}` : ""}.`,
+  },
+  missed_mate: { label: "Missed mate", text: (m) => `${m.best_san} started a forced mate.` },
+  hung_piece: { label: "Hung a piece", text: (m, who) => `${who} can win a piece with ${m.reply_san}.` },
+  refuted_attack: {
+    label: "Unsound attack",
+    text: (m) => `The attack doesn't work: ${m.reply_san} wins the piece.`,
+  },
+  allowed_tactic: { label: "Allowed a tactic", text: (m, who) => `${who} has a strong reply: ${m.reply_san}.` },
+  conversion: { label: "Spoiled a won endgame", text: () => "This endgame was winning, but not any more." },
+  missed_tactic: { label: "Missed tactic", text: (m) => `The forcing ${m.best_san} was much stronger.` },
+  positional: { label: "Positional", text: () => "No immediate tactic: a strategic error." },
+};
+const TIME_FLAG_INFO = {
+  impulsive: "Played in under 3 seconds: an impulsive move.",
+  time_trouble: "Played with less than 10% of the clock left.",
+  wasted_time: "A long think on an obvious move.",
+};
+const PHASE_LABELS = { opening: "Opening", middlegame: "Middlegame", endgame: "Endgame" };
 const MATE = 10000;
 let routeToken = 0;
 
@@ -73,6 +97,22 @@ function winChance(cp) {
   if (cp === null || cp === undefined) return 0;
   const capped = Math.max(-1500, Math.min(1500, cp));
   return 2 / (1 + Math.exp(-0.00368208 * capped)) - 1;
+}
+
+function formatSeconds(seconds) {
+  if (seconds === null || seconds === undefined) return "";
+  if (seconds < 60) return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes >= 60) return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}`;
+  return `${minutes}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
+}
+
+function plural(n, word) {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function sameName(a, b) {
@@ -252,6 +292,8 @@ async function loadGames(username, months) {
   document.getElementById("games-title").textContent = `Recent games of ${username}`;
   status.textContent = "Loading games from Chess.com…";
   list.replaceChildren();
+  document.getElementById("analyse-all-row").hidden = true;
+  loadStats(username);
   try {
     const data = await api(
       `/api/players/${encodeURIComponent(username)}/games?months=${months}&limit=40`,
@@ -261,10 +303,195 @@ async function loadGames(username, months) {
       ? "Tap a game to analyse it."
       : "No games found in this period. Try a longer period.";
     list.replaceChildren(...data.games.map((game) => gameRow(game)));
+    const row = document.getElementById("analyse-all-row");
+    const button = document.getElementById("analyse-all");
+    const count = Math.min(10, data.games.length);
+    row.hidden = count < 2;
+    button.textContent = `Analyse the ${count} most recent`;
+    button.onclick = () => analyseRecent(username, data.games.slice(0, count));
   } catch (err) {
     if (token !== routeToken) return;
     status.textContent = err.message;
   }
+}
+
+// Queue several games, so the progress section has data to work with.
+async function analyseRecent(username, games) {
+  const token = routeToken;
+  const button = document.getElementById("analyse-all");
+  const status = document.getElementById("games-status");
+  button.disabled = true;
+  let sent = 0;
+  let full = false;
+  for (const game of games) {
+    try {
+      await api("/api/analyses", { method: "POST", body: JSON.stringify({ pgn: game.pgn }) });
+      sent += 1;
+    } catch (err) {
+      if (err.status === 503) {
+        full = true;
+        break;
+      }
+    }
+  }
+  if (token !== routeToken) return;
+  button.disabled = false;
+  status.textContent =
+    `Sent ${plural(sent, "game")} for analysis.` +
+    (full ? " The queue is full; try the rest later." : "") +
+    " Your progress updates as they finish.";
+  // Refresh the progress section for a while as the analyses finish.
+  for (let i = 0; i < 20; i++) {
+    await sleep(30000);
+    if (token !== routeToken) return;
+    loadStats(username);
+  }
+}
+
+async function loadStats(username) {
+  const token = routeToken;
+  const section = document.getElementById("progress");
+  let stats;
+  try {
+    stats = await api(`/api/players/${encodeURIComponent(username)}/stats`);
+  } catch {
+    return;
+  }
+  if (token !== routeToken) return;
+  section.hidden = false;
+  const status = document.getElementById("progress-status");
+  const body = document.getElementById("progress-body");
+  if (!stats.games.length) {
+    status.textContent =
+      "Analyse a few games to see your accuracy over time and what to work on.";
+    body.hidden = true;
+    return;
+  }
+  status.textContent = `Based on ${plural(stats.games.length, "analysed game")}. Average centipawn loss: ${stats.acpl}.`;
+  body.hidden = false;
+  renderTrend(stats);
+  document.getElementById("insights").replaceChildren(
+    ...stats.insights.map((line) => el("li", { text: line })),
+  );
+  renderProgressDetails(stats);
+}
+
+// Average centipawn loss per game, oldest first. Lower is better.
+function renderTrend(stats) {
+  const svg = document.getElementById("trend");
+  const games = stats.games;
+  const width = Math.max(200, svg.clientWidth || 320);
+  const height = 120;
+  const pad = 10;
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  const top = Math.max(50, ...games.map((g) => g.acpl));
+  const x = (i) => (games.length === 1 ? width / 2 : pad + ((width - 2 * pad) * i) / (games.length - 1));
+  const y = (acpl) => height - pad - ((height - 2 * pad) * acpl) / top;
+  const nodes = [
+    svgEl("line", { class: "zero", x1: 0, x2: width, y1: y(0), y2: y(0) }),
+    svgEl("line", { class: "average", x1: 0, x2: width, y1: y(stats.acpl), y2: y(stats.acpl) }),
+    svgEl("path", {
+      class: "line",
+      d: games.map((g, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(g.acpl).toFixed(1)}`).join(""),
+    }),
+  ];
+  games.forEach((g, i) => {
+    const link = svgEl("a", { href: `#/a/${encodeURIComponent(g.id)}` });
+    const point = svgEl("circle", { class: `point ${g.result || ""}`, cx: x(i), cy: y(g.acpl), r: 5 });
+    const title = svgEl("title");
+    title.textContent = `${g.date || "?"} vs ${g.opponent || "?"} (${g.result || "?"}): ${g.acpl}`;
+    point.append(title);
+    link.append(point);
+    nodes.push(link);
+  });
+  svg.replaceChildren(...nodes);
+
+  document.getElementById("trend-caption").textContent =
+    "Average centipawn loss per game, oldest first; lower is better. The dashed line is your average. Tap a point to open the game.";
+}
+
+function renderProgressDetails(stats) {
+  const box = document.getElementById("progress-details");
+  const children = [];
+  const phases = Object.entries(stats.phases);
+  if (phases.length) {
+    children.push(
+      el("h3", { text: "Centipawn loss by phase" }),
+      el(
+        "div",
+        { class: "phase-stats" },
+        ...phases.map(([phase, data]) =>
+          el(
+            "div",
+            {},
+            el("div", { class: "stat", text: String(data.acpl) }),
+            el("div", { class: "stat-label", text: `${PHASE_LABELS[phase]} · ${data.moves} moves` }),
+          ),
+        ),
+      ),
+    );
+  }
+  const categories = Object.entries(stats.categories);
+  if (categories.length) {
+    const most = Math.max(...categories.map(([, n]) => n));
+    children.push(
+      el("h3", { text: "Kinds of mistakes and blunders" }),
+      el(
+        "ul",
+        { class: "alts" },
+        ...categories.map(([category, n]) =>
+          el(
+            "li",
+            { class: "alt wide" },
+            el("span", { text: CATEGORY_INFO[category]?.label ?? category }),
+            el("div", { class: "bar" }, el("div", { style: `width:${Math.round((100 * n) / most)}%` })),
+            el("span", { class: "muted small", text: String(n) }),
+          ),
+        ),
+      ),
+    );
+  }
+  if (stats.openings.length) {
+    children.push(
+      el("h3", { text: "Openings" }),
+      el("p", { class: "muted small", text: "Left book: the move where you left opening theory, on average." }),
+      el(
+        "table",
+        { class: "openings" },
+        el(
+          "thead",
+          {},
+          el("tr", {}, ...["Opening", "Games", "Left book", "Score"].map((h) => el("th", { text: h }))),
+        ),
+        el(
+          "tbody",
+          {},
+          ...stats.openings.map((o) =>
+            el(
+              "tr",
+              {},
+              el("td", {}, el("span", { class: `piece-dot ${o.color}` }), o.name),
+              el("td", { text: String(o.games) }),
+              el("td", {
+                text: o.left_book === null ? "–" : `move ${o.left_book}`,
+                class: o.advice ? `advice-${o.advice}` : null,
+              }),
+              el("td", { text: o.score === null ? "–" : `${Math.round(o.score * 100)}%` }),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+  const time = stats.time;
+  if (time) {
+    const parts = [`${formatSeconds(time.average)} per move on average`];
+    if (time.time_trouble) parts.push(`${plural(time.time_trouble, "mistake")} in time trouble`);
+    if (time.impulsive) parts.push(`${plural(time.impulsive, "mistake")} played in under 3 seconds`);
+    if (time.wasted_time) parts.push(`${plural(time.wasted_time, "long think")} on an obvious move`);
+    children.push(el("h3", { text: "Clock" }), el("p", { class: "small", text: `${parts.join(", ")}.` }));
+  }
+  box.replaceChildren(...children);
 }
 
 function gameRow(game) {
@@ -591,6 +818,26 @@ class AnalysisView {
       });
       children.push(el("div", { class: "actions" }, toggle));
     }
+    const category = CATEGORY_INFO[move.category];
+    if (category) {
+      const replier = this.sideLabel(move.color === "white" ? "black" : "white");
+      children.splice(
+        2,
+        0,
+        el("p", {}, el("strong", { text: `${category.label}. ` }), category.text(move, replier)),
+      );
+    }
+    if (move.time_spent !== null && move.time_spent !== undefined) {
+      const clock = `Took ${formatSeconds(move.time_spent)}, ${formatSeconds(move.clock)} left.`;
+      children.push(
+        el(
+          "p",
+          { class: "muted small" },
+          clock,
+          move.time_flag ? el("strong", { class: "time-flag", text: ` ${TIME_FLAG_INFO[move.time_flag]}` }) : null,
+        ),
+      );
+    }
     if (move.source === "tablebase") {
       children.push(el("p", { class: "muted small", text: "Exact result from the endgame tablebase." }));
     }
@@ -752,9 +999,30 @@ class AnalysisView {
                 ),
               )
             : el("p", { class: "muted small", text: "No mistakes or blunders." }),
+          this.categorySummary(s.categories),
+          this.timeSummary(s.time),
         );
       }),
     );
+  }
+
+  categorySummary(categories) {
+    const entries = Object.entries(categories || {});
+    if (!entries.length) return null;
+    return el(
+      "p",
+      { class: "small" },
+      entries.map(([c, n]) => `${CATEGORY_INFO[c]?.label ?? c}${n > 1 ? ` ×${n}` : ""}`).join(", "),
+    );
+  }
+
+  timeSummary(time) {
+    if (!time) return null;
+    const parts = [`${formatSeconds(time.average)} per move`];
+    if (time.time_trouble) parts.push(`${plural(time.time_trouble, "mistake")} in time trouble`);
+    if (time.impulsive) parts.push(`${plural(time.impulsive, "impulsive mistake")}`);
+    if (time.wasted_time) parts.push(`${plural(time.wasted_time, "long think")} on an obvious move`);
+    return el("p", { class: "muted small", text: `Clock: ${parts.join(", ")}.` });
   }
 
   renderOpening() {

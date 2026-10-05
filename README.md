@@ -12,8 +12,11 @@
 Chess Game Analyzer downloads your recent games from Chess.com, runs Stockfish over every move and checks the opening against established theory. Use it from your phone through the web app, or from the command line. For each game it reports:
 
 - your average centipawn loss and how many of your moves were best, good, inaccuracies, mistakes or blunders;
-- your biggest mistakes, with the evaluation before and after and the move Stockfish preferred;
+- your biggest mistakes, with the evaluation before and after, the move Stockfish preferred and what kind of error it was (a hung piece, a missed tactic, a spoiled endgame, …);
+- how you used your clock: mistakes played in under 3 seconds, mistakes made in time trouble and long thinks on obvious moves;
 - the move where you or your opponent left opening theory, and the book moves that score best from that position.
+
+Across several games it shows how your accuracy develops over time, where you leave book in each opening, in which phase of the game you lose the most, and which kinds of mistakes you make most often.
 
 ## Table of Contents 🗂
 
@@ -38,6 +41,20 @@ Chess Game Analyzer downloads your recent games from Chess.com, runs Stockfish o
    - **Stockfish** searches everything else to depth 16 by default. It uses Stockfish 16 or later (the Docker image builds 17.1), which evaluates positions with its NNUE neural network.
 
    Each move's centipawn loss is the drop in evaluation for the side that moved. Evaluations are capped at ±10 pawns, so going from "mate in 5" to "+15" does not count as a blunder. A loss of 50 centipawns or more is an inaccuracy, 100 or more a mistake, and 300 or more a blunder. Book and forced moves don't count towards the average centipawn loss.
+5. **Explain the mistakes** (`chess_analyzer.insights`). Using the engine's best move and the opponent's best reply, each mistake and blunder gets a category. These are heuristics; they don't need any extra engine time:
+
+   | Category | When |
+   | --- | --- |
+   | Allowed mate / Missed mate | The move allows a forced mate, or gives up one. |
+   | Hung a piece | The opponent's best reply wins a piece for free or for a cheaper one. |
+   | Unsound attack | A capture or check whose piece is then simply taken. |
+   | Allowed a tactic | The opponent's best reply is a check or capture. |
+   | Spoiled a won endgame | Winning (+3) before the move and no longer winning (below +1) after it, in an endgame. |
+   | Missed tactic | The engine's move was a check or capture that you didn't play. |
+   | Positional | None of the above. |
+
+   Each move is also put in a phase: the endgame starts once at most six queens, rooks, bishops and knights are left, and the opening lasts until move 10 unless pieces are traded off earlier. From Chess.com's clock times (`[%clk]`), mistakes played in under 3 seconds are flagged as impulsive, those with less than 10% of the starting time left as made in time trouble, and long thinks (10% of the starting time, at most two minutes) on forced moves or plain recaptures as wasted time.
+6. **Look for patterns across games** (`chess_analyzer.stats`). Your average centipawn loss per game shows whether your play is getting more accurate. Openings are grouped by family (e.g. *Sicilian Defense*), with the move where you leave book on average: leaving it by move 6 means the opening is worth studying, while staying in book past move 12 means your time is better spent on the middlegame. Together with the loss per phase, the most common kind of mistake and your time management, this gives a short list of what to work on.
 
 ## Installation ⚙️
 
@@ -104,6 +121,30 @@ Black: average centipawn loss 1020
 Engine searched 2 of 8 positions (5 book, 1 terminal).
 ```
 
+When more than one game is analysed, a summary of all of them follows:
+
+```text
+Summary of 5 games by erik
+  Average centipawn loss: 44
+
+Centipawn loss per game (oldest first)
+  2026-09-11    25  draw  vs chrhanson
+  2026-09-14    47  draw  vs Riphyak
+  2026-09-22    18  win   vs chrhanson
+  2026-09-22    46  loss  vs Rooketamine
+  2026-09-26    83  loss  vs AMansfield
+  Trend: worsening (36 in earlier games, 64 in the last 2)
+
+Centipawn loss by phase
+  opening       17  (50 moves)
+  middlegame    59  (83 moves)
+  endgame       21  (42 moves)
+
+What to work on
+  - Your average centipawn loss rose from 36 in your earlier games to 64 in your 2 most recent ones.
+  - You lose the most in the middlegame (average centipawn loss 59, against 21 at most elsewhere).
+```
+
 The modules can also be used from Python:
 
 ```python
@@ -129,10 +170,12 @@ with chess.engine.SimpleEngine.popen_uci(find_engine()) as engine:
 The web app is the easiest way to use the analyzer from a phone. Enter a Chess.com username and tap a game. Stockfish analyses it in the background, and the page shows:
 
 - the board with an evaluation bar. Step through the moves with the arrows, by swiping the board or by tapping a move;
-- each move's classification. Inaccuracies, mistakes and blunders also show the engine's best move, and "Show best move" draws it on the board;
+- each move's classification. Inaccuracies, mistakes and blunders also show the engine's best move, and "Show best move" draws it on the board. Mistakes and blunders say what kind of error they were, and every move shows how long it took;
 - an evaluation graph. Tap or drag on it to jump through the game;
 - both players' average centipawn loss and biggest mistakes;
 - where the game left opening theory, and how the book moves score.
+
+Under **Your progress**, the games list shows statistics over all your games that have been analysed: your average centipawn loss per game over time, the loss per game phase, the kinds of mistakes you make, where you leave book in each opening, how you use your clock, and what to work on. **Analyse the 10 most recent** queues your recent games, so the statistics fill in as they finish.
 
 Finished analyses are stored, so the **Share** button gives a link a friend can open. A game that was already analysed opens immediately. The app can be added to the phone's home screen.
 

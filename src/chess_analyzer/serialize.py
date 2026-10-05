@@ -13,6 +13,8 @@ HEADERS = (
     "Event",
     "Site",
     "Date",
+    "UTCDate",
+    "UTCTime",
     "White",
     "Black",
     "Result",
@@ -46,6 +48,13 @@ def move_to_dict(move: MoveAnalysis) -> dict:
         "fen": move.fen_after,
         "source": move.source,
         "source_before": move.source_before,
+        "reply_uci": move.reply_uci,
+        "reply_san": move.reply_san,
+        "phase": move.phase,
+        "category": move.category,
+        "clock": move.clock,
+        "time_spent": move.time_spent,
+        "time_flag": move.time_flag,
     }
 
 
@@ -55,6 +64,12 @@ def summary_to_dict(analysis: GameAnalysis, color: chess.Color) -> dict:
         "acpl": round(analysis.average_cp_loss(color)),
         "counts": {k: counts.get(k, 0) for k in CLASSIFICATIONS},
         "worst": [m.ply for m in analysis.worst_moves(color)],
+        "categories": dict(analysis.categories(color)),
+        "phases": {
+            phase: {"acpl": round(acpl), "moves": moves}
+            for phase, (acpl, moves) in analysis.phase_cp_loss(color).items()
+        },
+        "time": analysis.time_summary(color),
     }
 
 

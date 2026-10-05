@@ -8,9 +8,11 @@ import chess.pgn
 from chess_analyzer.engine import (
     CLASSIFICATIONS,
     MATE_SCORE,
+    MATE_THRESHOLD,
     TABLEBASE,
     GameAnalysis,
 )
+from chess_analyzer.insights import CATEGORIES, CATEGORY_LABELS
 from chess_analyzer.openings import OpeningDeviation
 from chess_analyzer.parse import opening_name
 
@@ -25,7 +27,7 @@ def format_eval(cp: int | None, source: str | None = None) -> str:
         return "book"
     if source == TABLEBASE:
         return "TB 1-0" if cp > 0 else "TB 0-1" if cp < 0 else "TB draw"
-    if abs(cp) >= MATE_SCORE - 500:
+    if abs(cp) >= MATE_THRESHOLD:
         moves = MATE_SCORE - abs(cp)
         sign = "+" if cp > 0 else "-"
         return f"{sign}M{moves}" if moves else f"{sign}#"
@@ -112,12 +114,15 @@ def format_game_report(
             if worst:
                 lines.append("  Biggest mistakes:")
             for m in worst:
+                kind = f" ({CATEGORY_LABELS[m.category]})" if m.category else ""
                 lines.append(
                     f"    {m.label:<12} {m.classification:<8} "
                     f"{format_eval(m.eval_before, m.source_before)} -> "
                     f"{format_eval(m.eval_after, m.source)}  "
-                    f"best was {m.best_san}"
+                    f"best was {m.best_san}{kind}"
                 )
+            if time := format_time_summary(analysis.time_summary(c)):
+                lines.append(f"  Time: {time}")
     if analysis is not None:
         sources = analysis.sources
         total = sum(sources.values())
@@ -131,4 +136,69 @@ def format_game_report(
             f"Engine searched {sources['engine']} of {total} positions"
             + (f" ({detail})." if detail else ".")
         )
+    return "\n".join(lines)
+
+
+def format_time_summary(time: dict | None) -> str:
+    """Describe clock use, e.g. ``8s per move; 1 mistake in time trouble``."""
+    if not time:
+        return ""
+    parts = [f"{time['average']:.0f}s per move"]
+    if n := time["time_trouble"]:
+        parts.append(f"{_count(n, 'mistake')} in time trouble")
+    if n := time["impulsive"]:
+        parts.append(f"{_count(n, 'mistake')} played in under 3s")
+    if n := time["wasted_time"]:
+        parts.append(f"{_count(n, 'long think')} on an obvious move")
+    return "; ".join(parts)
+
+
+def _count(n: int, word: str) -> str:
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
+def format_player_stats(stats: dict, username: str) -> str:
+    """Build the report on trends and weaknesses across several games.
+
+    ``stats`` comes from :func:`chess_analyzer.stats.player_stats`.
+    """
+    games = stats["games"]
+    lines = [f"Summary of {len(games)} games by {username}"]
+    if stats["acpl"] is not None:
+        lines.append(f"  Average centipawn loss: {stats['acpl']}")
+    if games:
+        lines += ["", "Centipawn loss per game (oldest first)"]
+        for g in games:
+            result = g["result"] or ""
+            lines.append(
+                f"  {g['date'] or '?':<10}  {g['acpl']:>4}  {result:<4}  "
+                f"vs {g['opponent'] or '?'}"
+            )
+    if trend := stats["trend"]:
+        lines.append(
+            f"  Trend: {trend['direction']} ({trend['older']} in earlier games, "
+            f"{trend['recent']} in the last {trend['games']})"
+        )
+    if stats["phases"]:
+        lines += ["", "Centipawn loss by phase"]
+        for phase, data in stats["phases"].items():
+            lines.append(f"  {phase:<11} {data['acpl']:>4}  ({data['moves']} moves)")
+    if stats["categories"]:
+        lines += ["", "Kinds of mistakes and blunders"]
+        for category in CATEGORIES:
+            if count := stats["categories"].get(category):
+                lines.append(f"  {CATEGORY_LABELS[category]:<22} {count}")
+    if stats["openings"]:
+        lines += ["", "Openings (move where you left book, on average)"]
+        for o in stats["openings"]:
+            left = f"move {o['left_book']:g}" if o["left_book"] is not None else "-"
+            lines.append(
+                f"  {o['name'][:34]:<34} {o['color']:<5}  {o['games']} games  "
+                f"left book: {left}"
+            )
+    if time := format_time_summary(stats["time"]):
+        lines += ["", f"Time: {time}"]
+    if stats["insights"]:
+        lines += ["", "What to work on"]
+        lines += [f"  - {line}" for line in stats["insights"]]
     return "\n".join(lines)

@@ -193,3 +193,34 @@ def test_frontend_and_pieces_are_served(tmp_path):
         assert piece.headers["content-type"] == "image/svg+xml"
         assert "black knight" in piece.text
         assert client.get("/api/pieces/xx.svg").status_code == 404
+
+
+def test_player_stats(tmp_path, scholars_mate_pgn):
+    with make_client(tmp_path) as client:
+        assert client.get("/api/players/alice/stats").json()["games"] == []
+        job_id = client.post("/api/analyses", json={"pgn": scholars_mate_pgn}).json()[
+            "id"
+        ]
+        wait_for(client, job_id)
+        alice = client.get("/api/players/Alice/stats").json()
+        bob = client.get("/api/players/bob/stats").json()
+
+    assert [g["id"] for g in alice["games"]] == [job_id]
+    assert alice["games"][0]["result"] == "win"
+    assert bob["games"][0]["result"] == "loss"
+    assert bob["categories"] == {"allowed_mate": 1}
+
+
+def test_player_stats_count_each_game_once(tmp_path, scholars_mate_pgn):
+    with make_client(tmp_path) as client:
+        store = client.app.state.store
+        result = {
+            "headers": {"White": "Alice", "Black": "bob", "Link": "https://x/1"},
+            "summary": {"white": {"acpl": 10}, "black": {"acpl": 20}},
+        }
+        for job_id, acpl in (("old", 50), ("new", 10)):
+            store.create(job_id, job_id, scholars_mate_pgn, 7)
+            result["summary"]["white"]["acpl"] = acpl
+            store.set_done(job_id, result)
+        games = client.get("/api/players/alice/stats").json()["games"]
+    assert [(g["id"], g["acpl"]) for g in games] == [("new", 10)]
