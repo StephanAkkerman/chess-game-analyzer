@@ -1,3 +1,36 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chess-game-analyzer"
+version = "0.1.0"
+description = "Analyse your Chess.com games with Stockfish and opening theory."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = [
+    "chess>=1.10",
+    "requests>=2.31",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+]
+
+[project.scripts]
+chess-analyzer = "chess_analyzer.cli:main"
+chess-analyzer-web = "chess_analyzer.web.app:main"
+chess-analyzer-syzygy = "chess_analyzer.syzygy:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"chess_analyzer.web" = ["static/*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
 [tool.isort]
 multi_line_output = 3
 include_trailing_comma = true
