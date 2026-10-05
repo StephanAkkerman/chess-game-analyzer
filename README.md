@@ -9,7 +9,7 @@
 
 ## Introduction
 
-Chess Game Analyzer downloads your recent games from Chess.com, runs Stockfish over every move and checks the opening against established theory. For each game it reports:
+Chess Game Analyzer downloads your recent games from Chess.com, runs Stockfish over every move and checks the opening against established theory. Use it from your phone through the web app, or from the command line. For each game it reports:
 
 - your average centipawn loss and how many of your moves were best, good, inaccuracies, mistakes or blunders;
 - your biggest mistakes, with the evaluation before and after and the move Stockfish preferred;
@@ -20,6 +20,8 @@ Chess Game Analyzer downloads your recent games from Chess.com, runs Stockfish o
 - [How it works](#how-it-works)
 - [Installation](#installation)
 - [Usage](#usage)
+- [Web app](#web-app)
+- [Self-hosting on a Raspberry Pi](#self-hosting-on-a-raspberry-pi)
 - [Citation](#citation)
 - [Contributing](#contributing)
 - [License](#license)
@@ -105,6 +107,74 @@ game = read_games(raw[0]["pgn"])[0]
 with chess.engine.SimpleEngine.popen_uci(find_engine()) as engine:
     analysis = analyze_game(game, engine, chess.engine.Limit(time=0.5))
 ```
+
+## Web app 📱
+
+<p align="center">
+  <img src="docs/screenshot-games.png" alt="List of recent games" width="280">
+  <img src="docs/screenshot-analysis.png" alt="Analysis of a game with the best move shown" width="280">
+</p>
+
+The web app is the easiest way to use the analyzer from a phone. Enter a Chess.com username and tap a game. Stockfish analyses it in the background, and the page shows:
+
+- the board with an evaluation bar. Step through the moves with the arrows, by swiping the board or by tapping a move;
+- each move's classification. Inaccuracies, mistakes and blunders also show the engine's best move, and "Show best move" draws it on the board;
+- an evaluation graph. Tap or drag on it to jump through the game;
+- both players' average centipawn loss and biggest mistakes;
+- where the game left opening theory, and how the book moves score.
+
+Finished analyses are stored, so the **Share** button gives a link a friend can open. A game that was already analysed opens immediately. The app can be added to the phone's home screen.
+
+To run it locally:
+
+```bash
+pip install -e .
+chess-analyzer-web          # http://127.0.0.1:8000
+```
+
+The server is configured with environment variables:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `ACCESS_CODE` | *(empty)* | When set, fetching games and starting analyses require this code. Shared analysis links work without it. |
+| `ANALYSIS_TIME` | `0.3` | Engine seconds per position. |
+| `ANALYSIS_DEPTH` | *(empty)* | Fixed search depth instead of `ANALYSIS_TIME`. |
+| `STOCKFISH_PATH` | `stockfish` on `PATH` | Stockfish binary. |
+| `STOCKFISH_THREADS` / `STOCKFISH_HASH` | `1` / `64` | Engine threads and hash size (MB). |
+| `WORKERS` | `1` | Games analysed in parallel. |
+| `MAX_QUEUE` | `20` | Maximum number of waiting analyses. |
+| `OPENING_EXPLORER` | `lichess` | `lichess`, `masters` or `none`. |
+| `OPENING_BOOK` | *(empty)* | Polyglot book to use instead of the explorer. |
+| `LICHESS_TOKEN` | *(empty)* | Lichess API token for the explorer. |
+| `DATA_DIR` | `data` | Where the SQLite database of analyses is kept. |
+| `HOST` / `PORT` | `127.0.0.1` / `8000` | Address to listen on. |
+
+## Self-hosting on a Raspberry Pi 🍓
+
+The Docker image runs on 64-bit Raspberry Pi OS (arm64) as well as on x86-64 machines, and includes Stockfish. A Raspberry Pi 4 or 5 analyses a 40-move game in about half a minute with the default settings.
+
+1. Install Docker on the Pi (`curl -fsSL https://get.docker.com | sh`) and clone this repository.
+2. Create the configuration and set an access code for your friends:
+
+   ```bash
+   cp .env.example .env
+   nano .env
+   ```
+
+3. Choose how the site is reached from the internet. Both options give you HTTPS on `chess.akkerman.ai`:
+
+   - **Caddy** (`COMPOSE_PROFILES=caddy`, the default). Add a DNS `A` record for `chess.akkerman.ai` pointing to your home IP address, and forward ports 80 and 443 on your router to the Pi. Caddy gets a Let's Encrypt certificate on its own.
+   - **Cloudflare Tunnel** (`COMPOSE_PROFILES=tunnel`). Use this if you can't or don't want to open ports, or if your home IP address changes. It requires the domain's DNS to be on Cloudflare. In the Cloudflare dashboard, go to *Zero Trust → Networks → Tunnels*, create a tunnel and add the public hostname `chess.akkerman.ai` with service `http://app:8000`. Then put the tunnel token in `CLOUDFLARE_TUNNEL_TOKEN`.
+
+4. Start it:
+
+   ```bash
+   docker compose up -d
+   ```
+
+   This pulls the image that GitHub Actions publishes to `ghcr.io/stephanakkerman/chess-game-analyzer` for every push to `main`. If that package is private, run `docker login ghcr.io` first, or make the package public in its GitHub settings. You can also build the image on the Pi with `docker compose up -d --build`.
+
+To update, run `docker compose pull && docker compose up -d`. Analyses are kept in the `analyzer-data` volume.
 
 ## Citation ✍️
 

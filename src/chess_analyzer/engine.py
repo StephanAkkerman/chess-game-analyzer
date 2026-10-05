@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import chess
@@ -68,6 +69,9 @@ class MoveAnalysis:
     cp_loss: int
     classification: str
     fen_before: str
+    uci: str = ""
+    best_uci: str = ""
+    fen_after: str = ""
 
     @property
     def move_number(self) -> int:
@@ -132,6 +136,7 @@ def analyze_game(
     game: chess.pgn.Game,
     engine: chess.engine.SimpleEngine,
     limit: chess.engine.Limit | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> GameAnalysis:
     """Evaluate every move of a game.
 
@@ -147,6 +152,8 @@ def analyze_game(
         An open UCI engine.
     limit : chess.engine.Limit, optional
         Search limit per position. Defaults to 0.5 seconds.
+    on_progress : callable, optional
+        Called as ``on_progress(done, total)`` after each move is analysed.
 
     Returns
     -------
@@ -156,9 +163,10 @@ def analyze_game(
     limit = limit or chess.engine.Limit(time=0.5)
     board = game.board()
     analysis = GameAnalysis()
+    moves = list(game.mainline_moves())
 
     score_before, best = _evaluate(engine, board, limit)
-    for ply, move in enumerate(game.mainline_moves(), start=1):
+    for ply, move in enumerate(moves, start=1):
         color = board.turn
         san = board.san(move)
         best_san = board.san(best) if best else ""
@@ -186,7 +194,12 @@ def analyze_game(
                 cp_loss=cp_loss,
                 classification=classify(cp_loss, move == best),
                 fen_before=fen_before,
+                uci=move.uci(),
+                best_uci=best.uci() if best else "",
+                fen_after=board.fen(),
             )
         )
         score_before, best = score_after, next_best
+        if on_progress is not None:
+            on_progress(ply, len(moves))
     return analysis

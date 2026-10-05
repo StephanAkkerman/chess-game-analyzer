@@ -9,13 +9,22 @@ description = "Analyse your Chess.com games with Stockfish and opening theory."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
-dependencies = ["chess>=1.10", "requests>=2.31"]
+dependencies = [
+    "chess>=1.10",
+    "requests>=2.31",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+]
 
 [project.scripts]
 chess-analyzer = "chess_analyzer.cli:main"
+chess-analyzer-web = "chess_analyzer.web.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"chess_analyzer.web" = ["static/*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

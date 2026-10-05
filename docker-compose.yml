@@ -1,0 +1,59 @@
+# Deploy with: cp .env.example .env, edit it, then `docker compose up -d`.
+# See README.md ("Self-hosting") for details.
+services:
+  app:
+    image: ghcr.io/stephanakkerman/chess-game-analyzer:latest
+    build: .
+    restart: unless-stopped
+    environment:
+      ACCESS_CODE: ${ACCESS_CODE:-}
+      ANALYSIS_TIME: ${ANALYSIS_TIME:-0.3}
+      ANALYSIS_DEPTH: ${ANALYSIS_DEPTH:-}
+      STOCKFISH_THREADS: ${STOCKFISH_THREADS:-2}
+      STOCKFISH_HASH: ${STOCKFISH_HASH:-128}
+      WORKERS: ${WORKERS:-1}
+      MAX_QUEUE: ${MAX_QUEUE:-20}
+      OPENING_EXPLORER: ${OPENING_EXPLORER:-lichess}
+      LICHESS_TOKEN: ${LICHESS_TOKEN:-}
+    volumes:
+      - analyzer-data:/data
+    # Only reachable through Caddy or the tunnel. For a quick LAN test,
+    # uncomment this and open http://<pi-ip>:8000.
+    # ports:
+    #   - "8000:8000"
+
+  # HTTPS with automatic Let's Encrypt certificates. Needs ports 80 and 443
+  # forwarded from your router to the Pi, and a DNS A/AAAA record for DOMAIN.
+  caddy:
+    image: caddy:2
+    profiles: ["caddy"]
+    restart: unless-stopped
+    depends_on:
+      - app
+    environment:
+      DOMAIN: ${DOMAIN:-chess.akkerman.ai}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+  # Alternative to Caddy: a Cloudflare Tunnel needs no port forwarding and
+  # hides your home IP. Point the tunnel's public hostname at http://app:8000.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    depends_on:
+      - app
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+
+volumes:
+  analyzer-data:
+  caddy-data:
+  caddy-config:

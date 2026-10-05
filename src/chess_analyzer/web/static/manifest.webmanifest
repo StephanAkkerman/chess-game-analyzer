@@ -1,0 +1,13 @@
+{
+  "name": "Chess Analyzer",
+  "short_name": "Chess",
+  "description": "Analyse your Chess.com games with Stockfish and opening theory.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#1b1a18",
+  "theme_color": "#1b1a18",
+  "icons": [
+    { "src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
