@@ -457,3 +457,22 @@ dialog input { width: 100%; margin: 8px 0; }
 .alt .san { font-weight: 700; }
 .bar { height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
 .bar > div { height: 100%; background: var(--accent); border-radius: 4px; }
+
+/* Progress */
+.graph.trend { cursor: default; }
+.graph .average { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 4 4; }
+.graph .point { fill: var(--draw); stroke: var(--surface); stroke-width: 2; cursor: pointer; }
+.graph .point.win { fill: var(--win); }
+.graph .point.loss { fill: var(--loss); }
+.insights { margin: 8px 0 0; padding-left: 20px; display: grid; gap: 6px; }
+.progress-details h3 { font-size: 0.95rem; margin: 16px 0 6px; }
+.phase-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 8px; }
+.alt.wide { grid-template-columns: 11em 1fr auto; }
+.openings { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+.openings th { text-align: left; color: var(--muted); font-weight: 600; font-size: 0.8rem; }
+.openings th, .openings td { padding: 4px 6px 4px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
+.openings td:first-child { overflow-wrap: anywhere; }
+.openings .piece-dot { margin-right: 6px; }
+.advice-study { color: var(--serious); font-weight: 600; }
+.advice-middlegame { color: var(--good); font-weight: 600; }
+.time-flag { color: var(--serious); font-weight: 600; }

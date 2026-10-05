@@ -98,6 +98,33 @@ class Store:
             ).fetchone()
         return self._row_to_job(row)
 
+    def results_for_player(self, username: str) -> list[tuple[str, dict]]:
+        """Return ``(id, result)`` of finished analyses ``username`` played in.
+
+        Games analysed more than once appear once, with the newest result.
+        """
+        name = username.lower()
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id, result FROM analyses WHERE status = ? AND ("
+                " lower(json_extract(result, '$.headers.White')) = ? OR"
+                " lower(json_extract(result, '$.headers.Black')) = ?)"
+                " ORDER BY created_at DESC",
+                (DONE, name, name),
+            ).fetchall()
+        results, seen = [], set()
+        for row in rows:
+            result = json.loads(row["result"])
+            moves = " ".join(m["uci"] for m in result.get("moves", []))
+            game = result.get("headers", {}).get("Link") or (
+                result.get("start_fen"),
+                moves,
+            )
+            if game not in seen:
+                seen.add(game)
+                results.append((row["id"], result))
+        return results[::-1]
+
     def pending_ids(self) -> list[str]:
         """Return queued and running jobs, oldest first."""
         with self._lock:

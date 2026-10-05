@@ -79,6 +79,14 @@ def test_analyze_game_with_fake_engine(scholars_mate_pgn):
     assert (nf6.label, nf6.best_san) == ("3...Nf6", "g6")
     # Mate scores are capped, so the loss is 1000 + 20, not ~10000.
     assert nf6.cp_loss == 1020
+    assert (nf6.category, nf6.reply_san, nf6.phase) == (
+        "allowed_mate",
+        "Qxf7#",
+        "opening",
+    )
+    # Inaccuracies are not categorised, and the PGN has no clock times.
+    assert qh5.category == ""
+    assert qh5.time_spent is None
     assert qxf7.eval_after == MATE_SCORE
 
     assert analysis.average_cp_loss(chess.WHITE) == pytest.approx(50 / 4)
@@ -192,3 +200,24 @@ def test_default_threads_leaves_a_core_free(monkeypatch):
     assert default_threads(workers=2) == 1
     monkeypatch.setattr("chess_analyzer.engine.available_cpus", lambda: 1)
     assert default_threads() == 1
+
+
+TIMED_PGN = """[TimeControl "180+0"]
+
+1. e4 {[%clk 0:03:00]} 1... e5 {[%clk 0:02:59]} 2. Bc4 {[%clk 0:02:58]}
+2... Nc6 {[%clk 0:02:50]} 3. Qh5 {[%clk 0:02:40]} 3... Nf6 {[%clk 0:02:49]}
+4. Qxf7# {[%clk 0:02:39]} 1-0
+"""
+
+
+def test_clock_times_and_flags():
+    game = read_games(TIMED_PGN)[0]
+    analysis = analyze_game(game, FakeEngine(EVALS))
+    nf6 = analysis.moves[5]
+    assert (nf6.clock, nf6.time_spent, nf6.time_flag) == (169, 1, "impulsive")
+    assert analysis.moves[4].time_spent == 18
+    summary = analysis.time_summary(chess.BLACK)
+    assert summary["moves"] == 3
+    assert (summary["errors"], summary["impulsive"]) == (1, 1)
+    assert analysis.categories(chess.BLACK) == {"allowed_mate": 1}
+    assert analysis.phase_cp_loss(chess.WHITE) == {"opening": (50 / 4, 4)}
