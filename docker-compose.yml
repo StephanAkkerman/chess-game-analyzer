@@ -6,8 +6,8 @@ services:
     build:
       context: .
       args:
-        # armv8-dotprod is faster on a Raspberry Pi 5 (not for a Pi 4).
-        STOCKFISH_ARCH: ${STOCKFISH_ARCH:-}
+        # Endgame tablebases baked into the image: full, wdl or none.
+        SYZYGY: ${SYZYGY:-full}
     restart: unless-stopped
     environment:
       ACCESS_CODE: ${ACCESS_CODE:-}
@@ -19,16 +19,13 @@ services:
       ENGINE_NICE: ${ENGINE_NICE:-10}
       WORKERS: ${WORKERS:-1}
       MAX_QUEUE: ${MAX_QUEUE:-20}
-      OPENING_BOOK: /books/${OPENING_BOOK_FILE:-book.bin}
       OPENING_EXPLORER: ${OPENING_EXPLORER:-lichess}
       LICHESS_TOKEN: ${LICHESS_TOKEN:-}
-      SYZYGY_PATH: /syzygy
     volumes:
       - analyzer-data:/data
-      # Polyglot opening book and Syzygy tablebases; see README.md. Both are
-      # optional: without them the engine analyses every position.
-      - ./books:/books
-      - ./syzygy:/syzygy
+      # The image includes an opening book and the endgame tablebases. To use
+      # your own Polyglot book instead, mount it over the built-in one:
+      # - ./my-book.bin:/opt/books/book.bin:ro
     # Only reachable through Caddy or the tunnel. For a quick LAN test,
     # uncomment this and open http://<pi-ip>:8000.
     # ports:

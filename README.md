@@ -155,18 +155,26 @@ The server is configured with environment variables:
 | `STOCKFISH_THREADS` | CPU cores minus one | Engine threads per worker. |
 | `STOCKFISH_HASH` | `128` | Engine hash size (MB). |
 | `ENGINE_NICE` | `10` | Lowers the engine's CPU priority (0–19) so the system stays responsive. |
-| `SYZYGY_PATH` | *(empty)* | Directory with Syzygy tablebases. |
+| `SYZYGY_PATH` | *(empty)*; `/opt/syzygy` in Docker | Directory with Syzygy tablebases. |
 | `WORKERS` | `1` | Games analysed in parallel. |
 | `MAX_QUEUE` | `20` | Maximum number of waiting analyses. |
 | `OPENING_EXPLORER` | `lichess` | `lichess`, `masters` or `none`. |
-| `OPENING_BOOK` | *(empty)* | Polyglot book to use instead of the explorer, when the file exists. |
+| `OPENING_BOOK` | *(empty)*; `/opt/books/book.bin` in Docker | Polyglot book to use instead of the explorer, when the file exists. |
 | `LICHESS_TOKEN` | *(empty)* | Lichess API token for the explorer. |
 | `DATA_DIR` | `data` | Where the SQLite database of analyses is kept. |
 | `HOST` / `PORT` | `127.0.0.1` / `8000` | Address to listen on. |
 
 ## Self-hosting on a Raspberry Pi 🍓
 
-The Docker image runs on 64-bit Raspberry Pi OS (arm64) as well as on x86-64 machines. It includes Stockfish 17.1, built from source with its NNUE networks embedded. The image is set up to be gentle on a Pi:
+The Docker image runs on 64-bit Raspberry Pi OS (arm64) as well as on x86-64 machines. Everything the analyzer uses is included, so there is nothing extra to download or configure:
+
+- **Stockfish 17.1**, built from source with its NNUE networks embedded. The image contains two builds; at startup it picks the faster one if the CPU supports it (`armv8-dotprod` on a Raspberry Pi 5, `armv8` on a Pi 4; on PCs, AVX2 or a portable build).
+- The **Syzygy 3-4-5 piece endgame tablebases** (about 940 MB).
+- The **gm2001 Polyglot opening book** (from [donna_opening_books](https://github.com/michaeldv/donna_opening_books)).
+
+The image is about 1.3 GB. The tablebases and the engine sit in their own layers below the app, so after the first pull, an update only downloads the few megabytes that changed.
+
+It is also set up to be gentle on a Pi:
 
 - Stockfish uses all cores but one (3 on a Pi 4 or 5) and runs at lower priority, so the Pi stays responsive and has some thermal headroom.
 - Each position is searched to depth 16, so a slow CPU takes longer but doesn't analyse less deeply. A search stops after 15 seconds if depth 16 still hasn't been reached.
@@ -182,22 +190,12 @@ Expect roughly one to three minutes per game on a Pi 4 or 5. That's an estimate:
    nano .env
    ```
 
-3. Optionally, add an opening book and endgame tablebases. Without them everything still works, but Stockfish has to analyse every position.
-
-   ```bash
-   mkdir -p books syzygy
-   # Syzygy 3-4-5 piece tablebases, about 940 MB (add --wdl-only for 380 MB):
-   docker compose run --rm app chess-analyzer-syzygy --dir /syzygy
-   ```
-
-   For the opening book, put any Polyglot book in `books/book.bin` (or set `OPENING_BOOK_FILE`). Without a book, the Lichess explorer is used for the opening, which needs internet access but no disk space.
-
-4. Choose how the site is reached from the internet. Both options give you HTTPS on `chess.akkerman.ai`:
+3. Choose how the site is reached from the internet. Both options give you HTTPS on `chess.akkerman.ai`:
 
    - **Caddy** (`COMPOSE_PROFILES=caddy`, the default). Add a DNS `A` record for `chess.akkerman.ai` pointing to your home IP address, and forward ports 80 and 443 on your router to the Pi. Caddy gets a Let's Encrypt certificate on its own.
    - **Cloudflare Tunnel** (`COMPOSE_PROFILES=tunnel`). Use this if you can't or don't want to open ports, or if your home IP address changes. It requires the domain's DNS to be on Cloudflare. In the Cloudflare dashboard, go to *Zero Trust → Networks → Tunnels*, create a tunnel and add the public hostname `chess.akkerman.ai` with service `http://app:8000`. Then put the tunnel token in `CLOUDFLARE_TUNNEL_TOKEN`.
 
-5. Start it:
+4. Start it:
 
    ```bash
    docker compose up -d
@@ -205,7 +203,18 @@ Expect roughly one to three minutes per game on a Pi 4 or 5. That's an estimate:
 
    This pulls the image that GitHub Actions publishes to `ghcr.io/stephanakkerman/chess-game-analyzer` for every push to `main`. If that package is private, run `docker login ghcr.io` first, or make the package public in its GitHub settings. You can also build the image on the Pi with `docker compose up -d --build`.
 
-To update, run `docker compose pull && docker compose up -d`. Analyses are kept in the `analyzer-data` volume. On a Raspberry Pi 5 you can build a faster engine with `STOCKFISH_ARCH=armv8-dotprod` in `.env` and `docker compose up -d --build`.
+To update, run `docker compose pull && docker compose up -d`. Analyses are kept in the `analyzer-data` volume.
+
+To use a different opening book, mount it over the built-in one (see the comment in `docker-compose.yml`). When you build the image yourself, these build arguments change what goes in it:
+
+| Build argument | Default | Description |
+| --- | --- | --- |
+| `SYZYGY` | `full` | Tablebases to include: `full` (WDL + DTZ, 940 MB), `wdl` (380 MB; best moves in tablebase endgames are less precise) or `none`. Also settable in `.env`. |
+| `OPENING_BOOK_URL` / `OPENING_BOOK_SHA256` | gm2001.bin | Polyglot book to download, and its checksum. An empty URL leaves the book out; the Lichess explorer is then used for openings. |
+| `STOCKFISH_VERSION` | `sf_17.1` | Stockfish release tag to build. |
+| `STOCKFISH_BUILDS` | per platform | Stockfish builds to include, fastest first. |
+
+Outside Docker, `chess-analyzer-syzygy --dir syzygy` downloads the tablebases, and `SYZYGY_PATH` and `OPENING_BOOK` point the app at them.
 
 ## Citation ✍️
 
