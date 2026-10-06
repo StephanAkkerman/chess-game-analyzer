@@ -19,10 +19,13 @@ def answer(search):
     """What the browser would send for ``search``, from the EVALS table.
 
     EVALS scores are from White's point of view; UCI scores are from the side
-    to move's.
+    to move's. Like FakeEngine, a search without the best move finds another
+    move that scores as well.
     """
     ply = len(search["moves"])
     score, best = EVALS[ply]
+    if search["searchmoves"]:
+        best = search["searchmoves"][0]
     sign = 1 if ply % 2 == 0 else -1
     if abs(score) >= MATE_SCORE - 500:
         return {"id": search["id"], "best": best, "mate": sign * (MATE_SCORE - score)}
@@ -33,16 +36,21 @@ def test_device_engine_matches_a_real_engine(scholars_mate_pgn):
     game = read_games(scholars_mate_pgn)[0]
     expected = analyze_game(game, FakeEngine(EVALS))
 
-    engine = DeviceEngine({})
-    analyze_game(game, engine)
-    searches = list(engine.missing.values())
-    # Every position but the final checkmate needs a search.
-    assert sorted(len(s["moves"]) for s in searches) == list(range(7))
-    evaluations = {s["id"]: parse_evaluation(s, answer(s)) for s in searches}
-
-    engine = DeviceEngine(evaluations)
-    analysis = analyze_game(game, engine)
-    assert engine.missing == {}
+    evaluations, rounds = {}, []
+    while True:
+        engine = DeviceEngine(evaluations)
+        analysis = analyze_game(game, engine)
+        if not engine.missing:
+            break
+        rounds.append(list(engine.missing.values()))
+        for s in rounds[-1]:
+            evaluations[s["id"]] = parse_evaluation(s, answer(s))
+    # First every position but the final checkmate, then the second-best
+    # moves of the positions that may be critical moments.
+    assert sorted(len(s["moves"]) for s in rounds[0]) == list(range(7))
+    assert not any(s["searchmoves"] for s in rounds[0])
+    assert len(rounds) == 2
+    assert all(s["searchmoves"] for s in rounds[1])
     assert analysis == expected
 
 
@@ -155,6 +163,11 @@ def test_device_analysis_round_trip(tmp_path, engine_dir, scholars_mate_pgn):
             url,
             json={"evaluations": [answer(second)], "engine": "Stockfish 19 Lite WASM"},
         ).json()
+        # Then the searches for critical moments, if any.
+        while job["status"] == "device":
+            job = client.post(
+                url, json={"evaluations": [answer(s) for s in job["searches"]]}
+            ).json()
         assert job["status"] == "done"
         assert "searches" not in job
 
@@ -180,10 +193,11 @@ def test_device_analysis_survives_a_restart(tmp_path, engine_dir, scholars_mate_
         job = client.post("/api/analyses", json=pgn).json()
     with make_client(tmp_path, **settings) as client:
         assert client.get(f"/api/analyses/{job['id']}").json()["status"] == "device"
-        job = client.post(
-            f"/api/analyses/{job['id']}/evaluations",
-            json={"evaluations": [answer(s) for s in job["searches"]]},
-        ).json()
+        while job["status"] == "device":
+            job = client.post(
+                f"/api/analyses/{job['id']}/evaluations",
+                json={"evaluations": [answer(s) for s in job["searches"]]},
+            ).json()
     assert job["status"] == "done"
 
 
