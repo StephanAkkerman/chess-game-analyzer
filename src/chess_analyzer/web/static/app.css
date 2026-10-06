@@ -118,6 +118,7 @@ main {
 .stack { display: flex; flex-direction: column; gap: 10px; }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .row.end { justify-content: flex-end; }
+.row.center-row { justify-content: center; margin-top: 6px; }
 .center { text-align: center; }
 .muted { color: var(--muted); }
 .small { font-size: 0.875rem; }
@@ -156,6 +157,7 @@ button, .button {
   touch-action: manipulation;
 }
 button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+.retry { margin-left: 8px; }
 button:disabled { opacity: 0.6; cursor: default; }
 
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }

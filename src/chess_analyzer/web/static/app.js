@@ -1,6 +1,8 @@
 // Chess Analyzer front end. No build step: plain ES modules served as-is.
 // All text from the API (names, PGN headers) goes through textContent.
 
+import { BrowserEngine, deviceSupported } from "./device.js";
+
 const view = document.getElementById("view");
 const store = {
   get(key, fallback = null) {
@@ -184,6 +186,112 @@ function getConfig() {
   return configPromise;
 }
 
+// ---------------------------------------------------------------- engine
+
+// Where Stockfish runs: "device" (in this browser) or "server". The user's
+// choice is remembered; by default the device runs it when it can.
+function engineLocation(config) {
+  const device = Boolean(config.device_engine) && deviceSupported();
+  const server = config.server_engine !== false;
+  const chosen = store.get("engineLocation");
+  if (chosen === "server" && server) return "server";
+  if (chosen === "device" && device) return "device";
+  return device || !server ? "device" : "server";
+}
+
+async function startAnalysis(pgn, engine) {
+  engine ??= engineLocation(await getConfig());
+  const job = await api("/api/analyses", { method: "POST", body: JSON.stringify({ pgn, engine }) });
+  if (job.status === "device") runner.add(job.id);
+  return job;
+}
+
+// Runs device analyses one after the other, in the background, for as long
+// as the page is open: it searches the positions each analysis asks for and
+// sends the results back in small batches, so little is lost on a reload.
+class DeviceRunner extends EventTarget {
+  constructor() {
+    super();
+    this.queue = [];
+    this.current = null;
+    this.engine = null;
+    this.status = new Map(); // id -> { done, total, error }
+  }
+
+  // Queue an analysis; `first` puts it at the front of the line.
+  add(id, first = false) {
+    const known = this.status.get(id);
+    if (this.current === id || (known?.finished && !known.error)) return;
+    if (known?.error) this.status.delete(id); // try again
+    this.queue = this.queue.filter((queued) => queued !== id);
+    if (first) this.queue.unshift(id);
+    else this.queue.push(id);
+    this.work();
+  }
+
+  active(id) {
+    return this.current === id || this.queue.includes(id);
+  }
+
+  async work() {
+    if (this.current) return;
+    let wakeLock = null;
+    try {
+      // Keep a phone's screen on: a sleeping device stops the engine.
+      wakeLock = await navigator.wakeLock?.request("screen");
+    } catch {
+      /* not supported or not allowed: the analysis just pauses */
+    }
+    while (this.queue.length) {
+      this.current = this.queue.shift();
+      const id = this.current;
+      try {
+        await this.run(id);
+      } catch (err) {
+        this.update(id, { error: err.message || String(err) });
+        if (this.engine?.failure || !this.engine?.worker) this.engine = null;
+      }
+      this.current = null;
+      this.dispatchEvent(new CustomEvent("finished", { detail: { id } }));
+    }
+    wakeLock?.release().catch(() => {});
+  }
+
+  update(id, values) {
+    this.status.set(id, { ...this.status.get(id), ...values });
+    this.dispatchEvent(new CustomEvent("progress", { detail: { id } }));
+  }
+
+  async run(id) {
+    let job = await api(`/api/analyses/${encodeURIComponent(id)}`);
+    while (job.status === "device") {
+      const config = await getConfig();
+      this.engine ??= new BrowserEngine(config.device_engine);
+      const engine = this.engine;
+      await engine.start();
+      const todo = job.searches;
+      if (!todo?.length) throw new Error("The server asked for no searches.");
+      let batch = [];
+      for (const [i, search] of todo.entries()) {
+        this.update(id, { done: job.done + batch.length, total: job.total, engine: engine.name });
+        batch.push({ id: search.id, ...(await engine.search(search, job.limit)) });
+        if (batch.length >= 5 || i === todo.length - 1) {
+          job = await api(`/api/analyses/${encodeURIComponent(id)}/evaluations`, {
+            method: "POST",
+            body: JSON.stringify({ evaluations: batch, engine: engine.name }),
+          });
+          batch = [];
+          if (job.status !== "device") break;
+        }
+      }
+    }
+    this.update(id, { done: job.done, total: job.total, finished: true });
+    if (job.status === "failed") throw new Error(job.error || "The analysis failed.");
+  }
+}
+
+const runner = new DeviceRunner();
+
 // ---------------------------------------------------------------- recent
 
 function rememberAnalysis(id, result) {
@@ -235,10 +343,7 @@ function renderHome(initialUser) {
     error.hidden = true;
     button.disabled = true;
     try {
-      const job = await api("/api/analyses", {
-        method: "POST",
-        body: JSON.stringify({ pgn: document.getElementById("pgn").value }),
-      });
+      const job = await startAnalysis(document.getElementById("pgn").value);
       location.hash = `#/a/${job.id}`;
     } catch (err) {
       error.textContent = err.message;
@@ -249,16 +354,41 @@ function renderHome(initialUser) {
   });
 
   renderRecent();
-  getConfig().then((config) => {
-    const info = document.getElementById("engine-info");
-    if (!info || !config.engine) return;
-    const parts = [`${config.engine_name || "Stockfish"}, ${config.engine}`];
-    if (config.tablebases) parts.push("Syzygy tablebases");
-    if (config.opening_source) parts.push(config.opening_source);
-    info.textContent = parts.join(" · ");
-  });
+  getConfig().then(renderEngineInfo);
 
   if (initialUser) loadGames(initialUser, Number(months.value));
+}
+
+// The engine used, and a choice between this device and the server when
+// both can run it.
+function renderEngineInfo(config) {
+  const info = document.getElementById("engine-info");
+  if (!info || !config.engine) return;
+  const location = engineLocation(config);
+  const parts = [
+    location === "device"
+      ? `Stockfish on this device, ${config.engine}`
+      : `${config.engine_name || "Stockfish"} on the server, ${config.engine}`,
+  ];
+  if (config.tablebases) parts.push("Syzygy tablebases");
+  if (config.opening_source) parts.push(config.opening_source);
+  info.replaceChildren(parts.join(" · "));
+  if (config.device_engine && deviceSupported() && config.server_engine !== false) {
+    const select = el(
+      "select",
+      {
+        "aria-label": "Where the engine runs",
+        onchange: () => {
+          store.set("engineLocation", select.value);
+          renderEngineInfo(config);
+        },
+      },
+      el("option", { value: "device", text: "on this device" }),
+      el("option", { value: "server", text: "on the server" }),
+    );
+    select.value = location;
+    info.append(el("br"), el("label", { class: "row center-row" }, "Run the engine ", select));
+  }
 }
 
 function renderRecent() {
@@ -323,10 +453,12 @@ async function analyseRecent(username, games) {
   button.disabled = true;
   let sent = 0;
   let full = false;
+  let onDevice = 0;
   for (const game of games) {
     try {
-      await api("/api/analyses", { method: "POST", body: JSON.stringify({ pgn: game.pgn }) });
+      const job = await startAnalysis(game.pgn);
       sent += 1;
+      if (job.status === "device") onDevice += 1;
     } catch (err) {
       if (err.status === 503) {
         full = true;
@@ -339,7 +471,15 @@ async function analyseRecent(username, games) {
   status.textContent =
     `Sent ${plural(sent, "game")} for analysis.` +
     (full ? " The queue is full; try the rest later." : "") +
+    (onDevice ? " This device analyses them one by one: keep this page open." : "") +
     " Your progress updates as they finish.";
+  if (onDevice) {
+    const refresh = () => {
+      if (token !== routeToken) runner.removeEventListener("finished", refresh);
+      else loadStats(username);
+    };
+    runner.addEventListener("finished", refresh);
+  }
   // Refresh the progress section for a while as the analyses finish.
   for (let i = 0; i < 20; i++) {
     await sleep(30000);
@@ -524,10 +664,7 @@ function gameRow(game) {
   button.addEventListener("click", async () => {
     button.disabled = true;
     try {
-      const job = await api("/api/analyses", {
-        method: "POST",
-        body: JSON.stringify({ pgn: game.pgn }),
-      });
+      const job = await startAnalysis(game.pgn);
       location.hash = `#/a/${job.id}`;
     } catch (err) {
       button.disabled = false;
@@ -574,6 +711,16 @@ async function renderAnalysis(id) {
     pending.hidden = false;
     const status = document.getElementById("pending-status");
     const fill = document.getElementById("progress-fill");
+    if (job.status === "device") {
+      const failure = await followDeviceAnalysis(id, job, token);
+      if (failure && token === routeToken) {
+        pending.hidden = true;
+        failed.hidden = false;
+        showDeviceFailure(job, failure);
+        return;
+      }
+      continue;
+    }
     const percent = job.total ? Math.round((100 * job.done) / job.total) : 0;
     if (job.status === "queued") {
       status.textContent = job.queue_position
@@ -586,6 +733,69 @@ async function renderAnalysis(id) {
     fill.parentElement.setAttribute("aria-valuenow", String(percent));
     await new Promise((resolve) => setTimeout(resolve, 1500));
   }
+}
+
+// Show the progress of a device analysis until it ends. Resolves to an error
+// message if this device could not finish it.
+function followDeviceAnalysis(id, job, token) {
+  document.getElementById("pending-title").textContent = "Analysing on your device…";
+  const status = document.getElementById("pending-status");
+  const fill = document.getElementById("progress-fill");
+  const show = () => {
+    const progress = runner.status.get(id) || job;
+    const percent = progress.total ? Math.round((100 * progress.done) / progress.total) : 0;
+    status.textContent =
+      runner.current === id || progress.finished
+        ? `Analysed ${progress.done} of ${progress.total} positions. Keep this page open until it is done.`
+        : runner.current
+          ? "Waiting for another analysis on this device to finish…"
+          : "Starting the engine…";
+    fill.style.width = `${percent}%`;
+    fill.parentElement.setAttribute("aria-valuenow", String(percent));
+  };
+  runner.add(id, true);
+  show();
+  if (!runner.active(id)) return Promise.resolve(null); // finished meanwhile
+  return new Promise((resolve) => {
+    const onProgress = (event) => {
+      if (token !== routeToken) return stop(null);
+      if (event.detail.id === id || event.type === "finished") show();
+      if (event.type === "finished" && event.detail.id === id) {
+        stop(runner.status.get(id)?.error || null);
+      }
+    };
+    const stop = (result) => {
+      runner.removeEventListener("progress", onProgress);
+      runner.removeEventListener("finished", onProgress);
+      resolve(result);
+    };
+    runner.addEventListener("progress", onProgress);
+    runner.addEventListener("finished", onProgress);
+  });
+}
+
+function showDeviceFailure(job, message) {
+  const box = document.getElementById("failed");
+  document.getElementById("failed-error").textContent = message;
+  getConfig().then((config) => {
+    if (config.server_engine === false || !job.pgn || box.querySelector(".retry")) return;
+    const retry = el("button", {
+      type: "button",
+      class: "primary retry",
+      text: "Analyse on the server instead",
+      onclick: async () => {
+        retry.disabled = true;
+        try {
+          const server = await startAnalysis(job.pgn, "server");
+          location.hash = `#/a/${server.id}`;
+        } catch (err) {
+          retry.disabled = false;
+          document.getElementById("failed-error").textContent = err.message;
+        }
+      },
+    });
+    box.append(retry);
+  });
 }
 
 class AnalysisView {

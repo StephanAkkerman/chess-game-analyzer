@@ -9,3 +9,4 @@ venv
 data
 tests
 .env
+stockfish-js

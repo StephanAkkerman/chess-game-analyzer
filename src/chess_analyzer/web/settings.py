@@ -37,7 +37,10 @@ class Settings:
     By default each position is searched to depth 16 (stopping after 15
     seconds at most) with all CPU cores but one, at low priority. Set
     ``analysis_depth`` to 0 and ``analysis_time`` to search for a fixed time
-    instead.
+    instead. Analyses in the browser use the same limits.
+
+    ``browser_engine_dir`` holds the Stockfish.js builds that let browsers
+    run the engine themselves (see ``deploy/fetch-stockfish-js.sh``).
     """
 
     data_dir: Path = Path("data")
@@ -54,6 +57,7 @@ class Settings:
     max_pgn_bytes: int = 100_000
     opening_book: str | None = None
     syzygy_path: str | None = None
+    browser_engine_dir: str | None = None
     opening_explorer: str = "lichess"
     opening_plies: int = 30
     lichess_token: str | None = field(default=None, repr=False)
@@ -77,6 +81,7 @@ class Settings:
             max_pgn_bytes=_env_int("MAX_PGN_BYTES", d.max_pgn_bytes),
             opening_book=os.environ.get("OPENING_BOOK") or None,
             syzygy_path=os.environ.get("SYZYGY_PATH") or None,
+            browser_engine_dir=os.environ.get("BROWSER_ENGINE_DIR") or None,
             opening_explorer=os.environ.get("OPENING_EXPLORER", d.opening_explorer),
             opening_plies=_env_int("OPENING_PLIES", d.opening_plies),
             lichess_token=os.environ.get("LICHESS_TOKEN") or None,

@@ -11,6 +11,7 @@ on:
       - "requirements.txt"
       - "pyproject.toml"
       - "src/**"
+      - "deploy/**"
       - ".github/workflows/docker.yml"
 
 permissions:

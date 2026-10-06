@@ -7,6 +7,7 @@ Run it with ``chess-analyzer-web`` or
 from __future__ import annotations
 
 import logging
+import mimetypes
 import secrets
 import threading
 import time
@@ -16,14 +17,16 @@ from pathlib import Path
 import chess
 import chess.svg
 import requests
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from chess_analyzer import __version__
+from chess_analyzer.engine import find_engine
 from chess_analyzer.fetch import ChessComClient
 from chess_analyzer.stats import game_record, player_stats
+from chess_analyzer.web.device import InvalidEvaluation, find_device_engine
 from chess_analyzer.web.service import (
     AnalysisService,
     EngineFactory,
@@ -34,7 +37,7 @@ from chess_analyzer.web.service import (
     has_tablebases,
 )
 from chess_analyzer.web.settings import Settings
-from chess_analyzer.web.store import DONE, FAILED, Job, Store
+from chess_analyzer.web.store import DEVICE, DONE, FAILED, Job, Store
 
 STATIC_DIR = Path(__file__).parent / "static"
 DRAW_RESULTS = {
@@ -46,10 +49,38 @@ DRAW_RESULTS = {
     "timevsinsufficient",
 }
 GAMES_CACHE_SECONDS = 120
+# Older Pythons do not know WebAssembly, which browsers need to stream it.
+mimetypes.add_type("application/wasm", ".wasm")
 
 
 class AnalysisRequest(BaseModel):
     pgn: str
+    # "device": Stockfish runs in the browser, "server": on this machine.
+    engine: str = Field("server", pattern="^(server|device)$")
+
+
+class DeviceEvaluation(BaseModel):
+    id: str = Field(max_length=40)
+    best: str = Field(max_length=5)
+    cp: int | None = None
+    mate: int | None = None
+
+
+class EvaluationsRequest(BaseModel):
+    evaluations: list[DeviceEvaluation] = Field(max_length=1000)
+    # The engine's UCI name, e.g. "Stockfish 19 Lite WASM".
+    engine: str | None = Field(None, max_length=80)
+
+
+class EngineFiles(StaticFiles):
+    """Stockfish.js builds. Their names carry the version, so they are cached
+    for a long time."""
+
+    async def get_response(self, path: str, scope) -> Response:
+        response = await super().get_response(path, scope)
+        if response.status_code == 200:
+            response.headers["Cache-Control"] = "public, max-age=2592000"
+        return response
 
 
 def game_summary(raw: dict, username: str) -> dict:
@@ -95,6 +126,10 @@ def create_app(
     """
     settings = settings or Settings.from_env()
     chesscom = chesscom or ChessComClient()
+    device_engine = find_device_engine(settings.browser_engine_dir)
+    server_engine = engine_factory is not None or bool(
+        find_engine(settings.stockfish_path)
+    )
     games_cache: dict[tuple[str, int], tuple[float, list[dict]]] = {}
     cache_lock = threading.Lock()
 
@@ -115,6 +150,20 @@ def create_app(
 
     app = FastAPI(title="Chess Game Analyzer", version=__version__, lifespan=lifespan)
 
+    @app.middleware("http")
+    async def isolate(request: Request, call_next):
+        """Make the page cross-origin isolated.
+
+        Browsers only give WebAssembly several threads (SharedArrayBuffer)
+        on such pages. Everything the app loads comes from its own origin, so
+        this costs nothing.
+        """
+        response = await call_next(request)
+        response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+        response.headers["Cross-Origin-Embedder-Policy"] = "require-corp"
+        response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+        return response
+
     def require_access(x_access_code: str | None = Header(default=None)) -> None:
         if settings.access_code and not secrets.compare_digest(
             (x_access_code or "").encode(), settings.access_code.encode()
@@ -133,6 +182,14 @@ def create_app(
             data["result"] = job.result
         if job.status == FAILED:
             data["error"] = job.error
+        if job.status == DEVICE:
+            limit = settings.limit
+            data["pgn"] = job.pgn
+            data["searches"] = job.state["searches"]
+            data["limit"] = {
+                "depth": limit.depth,
+                "movetime": round(limit.time * 1000) if limit.time else None,
+            }
         return data
 
     @app.get("/api/health")
@@ -148,6 +205,12 @@ def create_app(
             "engine_name": app.state.service.engine_name,
             "opening_source": settings.opening_label,
             "tablebases": has_tablebases(settings.syzygy_path),
+            "server_engine": server_engine,
+            "device_engine": device_engine
+            and {
+                kind: f"/engine/{name}" if name else None
+                for kind, name in device_engine.items()
+            },
         }
 
     @app.get("/api/access", dependencies=[Depends(require_access)])
@@ -196,12 +259,32 @@ def create_app(
 
     @app.post("/api/analyses", status_code=202, dependencies=[Depends(require_access)])
     def create_analysis(request: AnalysisRequest) -> dict:
+        device = request.engine == "device"
+        if device and device_engine is None:
+            raise HTTPException(422, "This server has no engine for the browser.")
         try:
-            job = app.state.service.submit(request.pgn)
+            job = app.state.service.submit(request.pgn, device=device)
         except InvalidGame as exc:
             raise HTTPException(422, str(exc))
         except QueueFull as exc:
             raise HTTPException(503, str(exc))
+        return job_to_dict(job)
+
+    @app.post(
+        "/api/analyses/{job_id}/evaluations", dependencies=[Depends(require_access)]
+    )
+    def add_evaluations(job_id: str, request: EvaluationsRequest) -> dict:
+        """Evaluations of positions the browser searched for a device analysis."""
+        try:
+            job = app.state.service.submit_evaluations(
+                job_id,
+                [e.model_dump() for e in request.evaluations],
+                engine_name=request.engine,
+            )
+        except InvalidEvaluation as exc:
+            raise HTTPException(422, str(exc))
+        if job is None:
+            raise HTTPException(404, "Analysis not found.")
         return job_to_dict(job)
 
     @app.get("/api/analyses/{job_id}")
@@ -235,6 +318,10 @@ def create_app(
         )
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    if device_engine is not None:
+        app.mount(
+            "/engine", EngineFiles(directory=settings.browser_engine_dir), name="engine"
+        )
     return app
 
 
