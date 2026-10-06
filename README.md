@@ -171,7 +171,7 @@ with chess.engine.SimpleEngine.popen_uci(find_engine()) as engine:
   <img src="docs/screenshot-analysis.png" alt="Analysis of a game with the best move shown" width="280">
 </p>
 
-The web app is the easiest way to use the analyzer from a phone. Enter a Chess.com username and tap a game. Stockfish analyses it in the background, and the page shows:
+The web app is the easiest way to use the analyzer from a phone. Enter a Chess.com username and tap a game. Stockfish analyses it, and the page shows:
 
 - the board with an evaluation bar. Step through the moves with the arrows, by swiping the board or by tapping a move;
 - each move's classification. Inaccuracies, mistakes and blunders also show the engine's best move, and "Show best move" draws it on the board. Mistakes and blunders say what kind of error they were, and every move shows how long it took;
@@ -182,21 +182,38 @@ The web app is the easiest way to use the analyzer from a phone. Enter a Chess.c
 
 Under **Your progress**, the games list shows statistics over all your games that have been analysed: your average centipawn loss per game over time, the loss per game phase, the kinds of mistakes you make, where you leave book in each opening, how you use your clock, and what to work on. **Puzzles from your games** lists the critical moments of your most recent games, so you can solve the positions that decided them again. **Analyse the 10 most recent** queues your recent games, so the statistics fill in as they finish.
 
+### Stockfish on your own device
+
+By default the engine runs in your browser rather than on the server, the way Lichess and Chess.com do it. The browser downloads [Stockfish.js](https://github.com/nmrugg/stockfish.js) 19 *lite* (about 1.7 MB, cached afterwards), a WebAssembly build of Stockfish with a small NNUE network, and runs it in a Web Worker so the page stays responsive. It is somewhat weaker than desktop Stockfish but still far stronger than any human, and with several cores it uses all but one of them.
+
+Only the searching moves to the browser. The server still finds the book moves, probes the endgame tablebases, classifies the moves and stores the result, so the report is the same either way:
+
+1. The browser sends the game. The server looks up the opening and works out which positions need a search.
+2. The browser searches those positions and sends the best move and score of each back, a few at a time.
+3. The server checks every answer (a legal best move, a sane score) and builds the analysis. Searches that depend on earlier results come back as one more round.
+
+Keep the page open until the analysis is done; a reload continues where it left off. The footer of the start page lets you switch to **on the server** instead, which is also used when a browser can't run WebAssembly. Analyses from the browser and from the server are kept apart, but a finished server analysis of a game is reused either way.
+
+Several threads need a [cross-origin isolated](https://web.dev/articles/cross-origin-isolation-guide) page, so the server sends `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`. Browsers that don't support that use the single-threaded build.
+
 Finished analyses are stored, so the **Share** button gives a link a friend can open. A game that was already analysed opens immediately. The app can be added to the phone's home screen.
 
 To run it locally:
 
 ```bash
 pip install -e .
-chess-analyzer-web          # http://127.0.0.1:8000
+deploy/fetch-stockfish-js.sh               # Stockfish.js for the browser, into ./stockfish-js
+BROWSER_ENGINE_DIR=stockfish-js chess-analyzer-web   # http://127.0.0.1:8000
 ```
+
+Without `BROWSER_ENGINE_DIR` every analysis runs on the server; without Stockfish on the server, only in the browser.
 
 The server is configured with environment variables:
 
 | Variable | Default | Description |
 | --- | --- | --- |
 | `ACCESS_CODE` | *(empty)* | When set, fetching games and starting analyses require this code. Shared analysis links work without it. |
-| `ANALYSIS_DEPTH` | `16` | Search depth per position. `0` searches for `ANALYSIS_TIME` seconds instead. |
+| `ANALYSIS_DEPTH` | `16` | Search depth per position, on the server and in the browser. `0` searches for `ANALYSIS_TIME` seconds instead. |
 | `ANALYSIS_MAX_TIME` | `15` | The most seconds a single search to `ANALYSIS_DEPTH` may take. |
 | `ANALYSIS_TIME` | *(empty)* | Seconds per position when `ANALYSIS_DEPTH` is `0`. |
 | `STOCKFISH_PATH` | `stockfish` on `PATH` | Stockfish binary. |
@@ -204,6 +221,7 @@ The server is configured with environment variables:
 | `STOCKFISH_HASH` | `128` | Engine hash size (MB). |
 | `ENGINE_NICE` | `10` | Lowers the engine's CPU priority (0–19) so the system stays responsive. |
 | `SYZYGY_PATH` | *(empty)*; `/opt/syzygy` in Docker | Directory with Syzygy tablebases. |
+| `BROWSER_ENGINE_DIR` | *(empty)*; `/opt/stockfish-js` in Docker | Directory with the Stockfish.js builds browsers download, from `deploy/fetch-stockfish-js.sh`. |
 | `WORKERS` | `1` | Games analysed in parallel. |
 | `MAX_QUEUE` | `20` | Maximum number of waiting analyses. |
 | `OPENING_EXPLORER` | `lichess` | `lichess`, `masters` or `none`. |
@@ -216,13 +234,14 @@ The server is configured with environment variables:
 
 The Docker image runs on 64-bit Raspberry Pi OS (arm64) as well as on x86-64 machines. Everything the analyzer uses is included, so there is nothing extra to download or configure:
 
-- **Stockfish 17.1**, built from source with its NNUE networks embedded. The image contains two builds; at startup it picks the faster one if the CPU supports it (`armv8-dotprod` on a Raspberry Pi 5, `armv8` on a Pi 4; on PCs, AVX2 or a portable build).
+- **Stockfish.js 19 lite** for analyses in the browser, which take no CPU on the Pi at all.
+- **Stockfish 17.1**, built from source with its NNUE networks embedded, for analyses on the server. The image contains two builds; at startup it picks the faster one if the CPU supports it (`armv8-dotprod` on a Raspberry Pi 5, `armv8` on a Pi 4; on PCs, AVX2 or a portable build).
 - The **Syzygy 3-4-5 piece endgame tablebases** (about 940 MB).
 - The **gm2001 Polyglot opening book** (from [donna_opening_books](https://github.com/michaeldv/donna_opening_books)).
 
 The image is about 1.3 GB. The tablebases and the engine sit in their own layers below the app, so after the first pull, an update only downloads the few megabytes that changed.
 
-It is also set up to be gentle on a Pi:
+Since visitors' browsers run the engine by default, the Pi mostly serves pages and does the light work around the searches, so it can handle many users at once. Analyses on the server are set up to be gentle on a Pi:
 
 - Stockfish uses all cores but one (3 on a Pi 4 or 5) and runs at lower priority, so the Pi stays responsive and has some thermal headroom.
 - Each position is searched to depth 16, so a slow CPU takes longer but doesn't analyse less deeply. A search stops after 15 seconds if depth 16 still hasn't been reached.

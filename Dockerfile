@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1
 # Runs on x86-64 and on 64-bit Raspberry Pi OS (arm64). The image contains
-# everything the analyzer uses: Stockfish 17.1 with its NNUE networks, the
-# Syzygy 3-4-5 piece endgame tablebases and a Polyglot opening book.
+# everything the analyzer uses: Stockfish 17.1 with its NNUE networks,
+# Stockfish.js 19 for analyses in the browser, the Syzygy 3-4-5 piece endgame
+# tablebases and a Polyglot opening book.
 
 # ---- Stockfish ---------------------------------------------------------------
 # Built from source so the image always has a recent Stockfish with its NNUE
@@ -50,6 +51,16 @@ RUN set -eux; \
     done; \
     echo "$builds" > /out/builds
 
+# ---- Stockfish for the browser -----------------------------------------------
+# WebAssembly builds of Stockfish that visitors' browsers download, so they
+# analyse games on their own device. Platform independent.
+FROM --platform=$BUILDPLATFORM debian:trixie-slim AS stockfish-js
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+COPY deploy/fetch-stockfish-js.sh /usr/local/bin/fetch-stockfish-js
+RUN fetch-stockfish-js /opt/stockfish-js
+
 # ---- Endgame tablebases and opening book -------------------------------------
 # Platform independent, so the layers are shared between amd64 and arm64.
 FROM --platform=$BUILDPLATFORM python:3.12-slim-trixie AS data
@@ -87,6 +98,7 @@ FROM python:3.12-slim-trixie
 COPY --from=data /opt/syzygy /opt/syzygy
 COPY --from=data /opt/books /opt/books
 COPY --from=stockfish /out /usr/local/lib/stockfish
+COPY --from=stockfish-js /opt/stockfish-js /opt/stockfish-js
 COPY deploy/stockfish.sh /usr/local/bin/stockfish
 COPY deploy/check-stockfish.sh /usr/local/bin/check-stockfish
 RUN check-stockfish
@@ -97,6 +109,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     STOCKFISH_PATH=/usr/local/bin/stockfish \
     SYZYGY_PATH=/opt/syzygy \
+    BROWSER_ENGINE_DIR=/opt/stockfish-js \
     OPENING_BOOK=/opt/books/book.bin \
     DATA_DIR=/data \
     HOST=0.0.0.0 \

@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS analyses (
     total INTEGER NOT NULL DEFAULT 0,
     result TEXT,
     error TEXT,
+    state TEXT,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
@@ -26,6 +27,8 @@ CREATE INDEX IF NOT EXISTS analyses_key ON analyses (key);
 """
 
 QUEUED, RUNNING, DONE, FAILED = "queued", "running", "done", "failed"
+# Waiting for the user's browser to search positions.
+DEVICE = "device"
 
 
 @dataclass
@@ -40,6 +43,7 @@ class Job:
     error: str | None
     created_at: float
     updated_at: float
+    state: dict | None = None
 
 
 class Store:
@@ -59,6 +63,9 @@ class Store:
         self._lock = threading.Lock()
         with self._lock:
             self._db.executescript(SCHEMA)
+            columns = {r[1] for r in self._db.execute("PRAGMA table_info(analyses)")}
+            if "state" not in columns:  # databases from before device analysis
+                self._db.execute("ALTER TABLE analyses ADD COLUMN state TEXT")
 
     def close(self) -> None:
         with self._lock:
@@ -69,15 +76,33 @@ class Store:
             return None
         data = dict(row)
         data["result"] = json.loads(data["result"]) if data["result"] else None
+        data["state"] = json.loads(data["state"]) if data["state"] else None
         return Job(**data)
 
-    def create(self, job_id: str, key: str, pgn: str, total: int) -> Job:
+    def create(
+        self,
+        job_id: str,
+        key: str,
+        pgn: str,
+        total: int,
+        status: str = QUEUED,
+        state: dict | None = None,
+    ) -> Job:
         now = time.time()
         with self._lock, self._db:
             self._db.execute(
-                "INSERT INTO analyses (id, key, status, pgn, total, created_at,"
-                " updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (job_id, key, QUEUED, pgn, total, now, now),
+                "INSERT INTO analyses (id, key, status, pgn, total, state,"
+                " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    job_id,
+                    key,
+                    status,
+                    pgn,
+                    total,
+                    json.dumps(state) if state is not None else None,
+                    now,
+                    now,
+                ),
             )
         return self.get(job_id)
 
@@ -150,7 +175,11 @@ class Store:
         self._update(job_id, done=done, total=total)
 
     def set_done(self, job_id: str, result: dict) -> None:
-        self._update(job_id, status=DONE, result=json.dumps(result))
+        self._update(job_id, status=DONE, result=json.dumps(result), state=None)
+
+    def set_state(self, job_id: str, state: dict, done: int, total: int) -> None:
+        """Save a device analysis that is still waiting for searches."""
+        self._update(job_id, state=json.dumps(state), done=done, total=total)
 
     def set_failed(self, job_id: str, error: str) -> None:
         self._update(job_id, status=FAILED, error=error)
