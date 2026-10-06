@@ -31,9 +31,13 @@ from chess_analyzer.openings import (
     find_deviation,
 )
 from chess_analyzer.parse import player_color, read_games
-from chess_analyzer.report import format_game_report, format_player_stats
+from chess_analyzer.report import (
+    format_game_report,
+    format_player_stats,
+    format_puzzles_pgn,
+)
 from chess_analyzer.serialize import result_to_dict
-from chess_analyzer.stats import game_record, player_stats
+from chess_analyzer.stats import game_record, player_stats, puzzles
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -108,6 +112,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     engine.add_argument(
         "--no-engine", action="store_true", help="Skip the engine analysis."
+    )
+    engine.add_argument(
+        "--no-critical",
+        action="store_true",
+        help="Don't look for critical moments, which costs some engine time.",
+    )
+    engine.add_argument(
+        "--puzzles",
+        metavar="FILE",
+        help="Write your critical moments to FILE as PGN puzzles.",
     )
 
     openings = parser.add_argument_group("openings")
@@ -202,7 +216,14 @@ def main(argv: list[str] | None = None) -> int:
             # Book moves need no engine time.
             book = book_plies(game, deviation, args.opening_plies) if source else set()
             analysis = (
-                analyze_game(game, engine, limit, book_plies=book, tablebase=tablebase)
+                analyze_game(
+                    game,
+                    engine,
+                    limit,
+                    book_plies=book,
+                    tablebase=tablebase,
+                    critical=not args.no_critical,
+                )
                 if engine
                 else None
             )
@@ -228,6 +249,12 @@ def main(argv: list[str] | None = None) -> int:
         if len(records) > 1:
             print("\n" + "=" * 72 + "\n")
             print(format_player_stats(player_stats(records), args.username))
+        if args.puzzles:
+            records.sort(key=lambda r: (r["date"], r["utc_time"]))
+            found = puzzles(records, limit=None)
+            with open(args.puzzles, "w", encoding="utf-8") as f:
+                f.write(format_puzzles_pgn(found))
+            print(f"\nWrote {len(found)} puzzles to {args.puzzles}.", file=sys.stderr)
     return 0
 
 

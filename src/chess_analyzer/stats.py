@@ -35,6 +35,10 @@ MIN_PHASE_MOVES = 10
 # A kind of mistake, or a time problem, is named when it accounts for at
 # least this share of the mistakes and blunders.
 NOTABLE_SHARE = 0.25
+# Critical moments to name a share of found ones, and the most puzzles from
+# them to list.
+MIN_CRITICAL = 5
+MAX_PUZZLES = 10
 # Words that end the name of an opening family, as in "Sicilian Defense
 # Najdorf Variation".
 FAMILY_WORDS = ("Defense", "Defence", "Game", "Opening", "Gambit", "Attack", "System")
@@ -43,8 +47,7 @@ CATEGORY_ADVICE = {
     "allowed_mate": "check your opponent's checks and threats against your "
     "king before every move",
     "missed_mate": "practise mating patterns",
-    "hung_piece": "before each move, check which of your pieces it leaves "
-    "undefended",
+    "hung_piece": "before each move, check which of your pieces it leaves undefended",
     "refuted_attack": "calculate attacks and sacrifices further before "
     "committing to them",
     "allowed_tactic": "before each move, look for your opponent's checks and "
@@ -105,6 +108,19 @@ def game_record(
         else:
             opponent_left_book = move
     date = headers.get("UTCDate") or headers.get("Date", "")
+    moves = result.get("moves", [])
+    critical = [
+        {
+            "ply": m["ply"],
+            "label": m["label"],
+            "fen": m["fen_before"],
+            "best_san": m["best_san"],
+            "best_uci": m["best_uci"],
+            "found": m["classification"] == "best",
+        }
+        for ply in summary.get("critical") or []
+        if 0 < ply <= len(moves) and (m := moves[ply - 1])
+    ]
     return {
         "id": analysis_id,
         "date": date.replace(".", "-") if "?" not in date else "",
@@ -121,6 +137,7 @@ def game_record(
         "categories": summary.get("categories") or {},
         "phases": summary.get("phases") or {},
         "time": summary.get("time"),
+        "critical": critical,
     }
 
 
@@ -255,6 +272,17 @@ def _insights(stats: dict) -> list[str]:
                 f"{CATEGORY_ADVICE[common]}."
             )
 
+    critical = stats["critical"]
+    if critical["total"] >= MIN_CRITICAL:
+        share = critical["found"] / critical["total"]
+        if share < 0.5:
+            lines.append(
+                f"You found the only good move in {critical['found']} of "
+                f"{critical['total']} critical moments: practise on these "
+                "positions from your own games, and take more time when only "
+                "one move holds."
+            )
+
     time = stats["time"]
     if time and time["errors"] >= MIN_ERRORS:
         if time[TIME_TROUBLE] / time["errors"] >= NOTABLE_SHARE:
@@ -293,6 +321,29 @@ def _insights(stats: dict) -> list[str]:
     return lines
 
 
+def puzzles(records: list[dict], limit: int | None = MAX_PUZZLES) -> list[dict]:
+    """Turn the critical moments of the newest games into puzzles.
+
+    Each puzzle is the position before the critical move, with the player to
+    move; the solution is the engine's best move. ``records`` are sorted
+    oldest first, as in :func:`player_stats`.
+    """
+    items = []
+    for r in reversed(records):
+        for c in r.get("critical", []):
+            items.append(
+                {
+                    "id": r["id"],
+                    "date": r["date"],
+                    "opponent": r["opponent"],
+                    "color": r["color"],
+                    "link": r["link"],
+                    **c,
+                }
+            )
+    return items[:limit]
+
+
 def player_stats(records: list[dict]) -> dict:
     """Combine game records from :func:`game_record` into overall statistics.
 
@@ -300,8 +351,10 @@ def player_stats(records: list[dict]) -> dict:
     -------
     dict
         ``games`` (oldest first, for the trendline), ``acpl``, ``trend``,
-        ``openings``, ``categories``, ``phases``, ``time`` and ``insights``,
-        a list of sentences naming the clearest weaknesses.
+        ``openings``, ``categories``, ``phases``, ``time``, ``critical``
+        (how many critical moments the player met and found), ``puzzles``
+        (critical moments from the most recent games, newest first) and
+        ``insights``, a list of sentences naming the clearest weaknesses.
     """
     records = sorted(records, key=lambda r: (r["date"], r["utc_time"]))
     acpls = [r["acpl"] for r in records]
@@ -323,6 +376,11 @@ def player_stats(records: list[dict]) -> dict:
         "categories": {c: categories[c] for c in CATEGORIES if categories[c]},
         "phases": _phases(records),
         "time": _time(records),
+        "critical": {
+            "total": sum(len(r.get("critical", [])) for r in records),
+            "found": sum(c["found"] for r in records for c in r.get("critical", [])),
+        },
+        "puzzles": puzzles(records),
     }
     stats["insights"] = _insights(stats)
     return stats
