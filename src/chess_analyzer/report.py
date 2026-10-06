@@ -7,6 +7,7 @@ import chess.pgn
 
 from chess_analyzer.engine import (
     CLASSIFICATIONS,
+    FOUND,
     MATE_SCORE,
     MATE_THRESHOLD,
     TABLEBASE,
@@ -127,7 +128,7 @@ def format_game_report(
             for m in critical:
                 verdict = (
                     "found"
-                    if m.classification == "best"
+                    if m.classification in FOUND
                     else f"missed, best was {m.best_san}"
                 )
                 lines.append(

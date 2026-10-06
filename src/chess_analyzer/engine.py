@@ -51,15 +51,36 @@ CRITICAL_EQUAL = 100
 CRITICAL_DROP = 200
 CRITICAL_PER_GAME = 3
 
+# A brilliant move gives up at least this much material (in pawns), from a
+# position that was not already won by BRILLIANT_WINNING or more. Brilliant
+# moves and misses leave the side that moved at HOLDING or better.
+BRILLIANT_MATERIAL = 2
+BRILLIANT_WINNING = 500
+HOLDING = -50
+
+# The classifications, from best to worst, as on Chess.com:
+#
+# - brilliant: a sound sacrifice (see :func:`is_brilliant`);
+# - great: the only move that kept the balance in a critical moment;
+# - miss: a mistake or blunder that let a winning tactic or a mate slip,
+#   without making the position bad;
+# - the others by centipawn loss, see :func:`classify`.
 CLASSIFICATIONS = (
     "book",
     "forced",
+    "brilliant",
+    "great",
     "best",
     "good",
     "inaccuracy",
     "mistake",
+    "miss",
     "blunder",
 )
+# Moves that cost a lot: they are categorised and listed as the worst moves.
+ERRORS = ("mistake", "miss", "blunder")
+# Moves that found the engine's best move (or one as good).
+FOUND = ("brilliant", "great", "best")
 # How a position was evaluated.
 ENGINE, TABLEBASE, FORCED, TERMINAL, BOOK = (
     "engine",
@@ -182,12 +203,8 @@ class GameAnalysis:
         return Counter(m.classification for m in self.for_color(color))
 
     def worst_moves(self, color: chess.Color, n: int = 3) -> list[MoveAnalysis]:
-        """Return the ``n`` costliest mistakes, inaccuracies excluded."""
-        bad = [
-            m
-            for m in self.for_color(color)
-            if m.classification in ("mistake", "blunder")
-        ]
+        """Return the ``n`` costliest errors (see :data:`ERRORS`)."""
+        bad = [m for m in self.for_color(color) if m.classification in ERRORS]
         return sorted(bad, key=lambda m: m.cp_loss, reverse=True)[:n]
 
     def critical_moments(self, color: chess.Color) -> list[MoveAnalysis]:
@@ -226,7 +243,7 @@ class GameAnalysis:
         return {
             "moves": len(timed),
             "average": sum(m.time_spent for m in timed) / len(timed),
-            "errors": sum(m.classification in ("mistake", "blunder") for m in timed),
+            "errors": sum(m.classification in ERRORS for m in timed),
             **{flag: flags.get(flag, 0) for flag in insights.TIME_FLAGS},
         }
 
@@ -485,6 +502,32 @@ def is_critical(
     return not insights.is_obvious(board, before.best)
 
 
+def is_brilliant(board: chess.Board, move: chess.Move, before: int, after: int) -> bool:
+    """Return whether ``move`` was a sound sacrifice.
+
+    ``before`` and ``after`` are the evaluations before and after the move,
+    from the point of view of the side that moved. The move must give up a
+    piece (see :func:`chess_analyzer.insights.material_offered`), from a
+    position that was not already easily won, and still keep the balance.
+    """
+    if before >= BRILLIANT_WINNING or after < HOLDING:
+        return False
+    if insights.is_obvious(board, move):
+        return False
+    return insights.material_offered(board, move) >= BRILLIANT_MATERIAL
+
+
+def is_miss(category: str, after: int) -> bool:
+    """Return whether an error only let a win slip, as Chess.com's "miss".
+
+    That is a missed mate or tactic after which the side that moved, from
+    whose point of view ``after`` is, still stands at least about equal.
+    """
+    return category in (insights.MISSED_MATE, insights.MISSED_TACTIC) and (
+        after >= HOLDING
+    )
+
+
 def _cap(cp: int) -> int:
     return max(-EVAL_CAP, min(EVAL_CAP, cp))
 
@@ -616,6 +659,12 @@ def analyze_game(
                 sign * after.score,
                 MATE_THRESHOLD,
             )
+            if is_miss(category, sign * _cap(after.score)):
+                classification = "miss"
+        elif classification in ("best", "good") and is_brilliant(
+            board, move, sign * _cap(before.score), sign * _cap(after.score)
+        ):
+            classification = "brilliant"
         time = times[ply - 1]
         analysis.moves.append(
             MoveAnalysis(
@@ -650,6 +699,8 @@ def analyze_game(
             board, before, sign * _cap(before.score), sign * _cap(second_score)
         ):
             analysis.moves[-1].critical = True
+            if classification == "best":
+                analysis.moves[-1].classification = "great"
     _keep_most_critical(analysis)
     return analysis
 

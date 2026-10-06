@@ -25,12 +25,18 @@ const store = {
 const CLASS_INFO = {
   book: { label: "Book", sym: "" },
   forced: { label: "Forced", sym: "" },
+  brilliant: { label: "Brilliant", sym: "!!" },
+  great: { label: "Great", sym: "!" },
   best: { label: "Best", sym: "★" },
   good: { label: "Good", sym: "" },
   inaccuracy: { label: "Inaccuracy", sym: "?!" },
   mistake: { label: "Mistake", sym: "?" },
+  miss: { label: "Miss", sym: "✗" },
   blunder: { label: "Blunder", sym: "??" },
 };
+// Moves that found the best move, and those marked on the evaluation graph.
+const FOUND = ["brilliant", "great", "best"];
+const MARKED = ["brilliant", "great", "inaccuracy", "mistake", "miss", "blunder"];
 // What kind of error a mistake or blunder was. `who` is the side that
 // replies, as "You", "Your opponent", "White" or "Black".
 const CATEGORY_INFO = {
@@ -107,6 +113,34 @@ function formatSeconds(seconds) {
   const minutes = Math.floor(seconds / 60);
   if (minutes >= 60) return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}`;
   return `${minutes}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
+}
+
+// A small "?" that opens an explanation, on touch screens as well as with a
+// mouse or keyboard.
+function infoTip(label, text) {
+  const body = el("div", { class: "tip-body", text });
+  const tip = el("details", { class: "tip" }, el("summary", { "aria-label": label, title: label, text: "?" }), body);
+  // Keep the explanation on screen, wherever the "?" is.
+  tip.addEventListener("toggle", () => {
+    if (!tip.open) return;
+    body.style.left = "0px";
+    const rect = body.getBoundingClientRect();
+    const overflow = rect.right - (document.documentElement.clientWidth - 8);
+    if (overflow > 0) body.style.left = `${-Math.min(overflow, rect.left - 8)}px`;
+  });
+  return tip;
+}
+
+const CPL_TEXT =
+  "Centipawn loss is how much worse a move was than the engine's best move, " +
+  "in hundredths of a pawn: a loss of 100 gives away the equivalent of a pawn. " +
+  "The average leaves out book and forced moves, and evaluations are capped at " +
+  "10 pawns, so one lost won position doesn't swamp the rest. Lower is better: " +
+  "0 means every move matched the engine. It measures how accurately you play " +
+  "whatever the result, so it shows progress that wins and losses can hide.";
+
+function cplTip() {
+  return infoTip("What is centipawn loss?", CPL_TEXT);
 }
 
 function plural(n, word) {
@@ -454,10 +488,12 @@ async function analyseRecent(username, games) {
   let sent = 0;
   let full = false;
   let onDevice = 0;
+  const ids = [];
   for (const game of games) {
     try {
       const job = await startAnalysis(game.pgn);
       sent += 1;
+      ids.push(job.id);
       if (job.status === "device") onDevice += 1;
     } catch (err) {
       if (err.status === 503) {
@@ -473,18 +509,60 @@ async function analyseRecent(username, games) {
     (full ? " The queue is full; try the rest later." : "") +
     (onDevice ? " This device analyses them one by one: keep this page open." : "") +
     " Your progress updates as they finish.";
-  if (onDevice) {
-    const refresh = () => {
-      if (token !== routeToken) runner.removeEventListener("finished", refresh);
-      else loadStats(username);
-    };
-    runner.addEventListener("finished", refresh);
-  }
-  // Refresh the progress section for a while as the analyses finish.
-  for (let i = 0; i < 20; i++) {
-    await sleep(30000);
-    if (token !== routeToken) return;
-    loadStats(username);
+  followBatch(username, ids, token);
+}
+
+// Show how far a batch of analyses has got, and refresh the progress section
+// each time one finishes. Only the latest batch is followed.
+let batchRun = 0;
+async function followBatch(username, sent, token) {
+  const run = ++batchRun;
+  // The same game sent twice is one analysis.
+  const ids = [...new Set(sent)];
+  const box = document.getElementById("batch");
+  const text = document.getElementById("batch-status");
+  const fill = document.getElementById("batch-fill");
+  const jobs = new Map(ids.map((id) => [id, { status: "queued", done: 0, total: 0 }]));
+  const ended = (job) => job.status === "done" || job.status === "failed";
+  box.hidden = !ids.length;
+  while (ids.length && token === routeToken && run === batchRun) {
+    let changed = false;
+    for (const [id, job] of jobs) {
+      if (ended(job)) continue;
+      try {
+        const latest = await api(`/api/analyses/${encodeURIComponent(id)}`);
+        jobs.set(id, { status: latest.status, done: latest.done, total: latest.total });
+        changed ||= ended(latest);
+      } catch {
+        /* try again on the next round */
+      }
+    }
+    if (token !== routeToken || run !== batchRun) return;
+    let progress = 0;
+    let finished = 0;
+    let failed = 0;
+    for (const [id, job] of jobs) {
+      if (ended(job)) {
+        progress += 1;
+        finished += 1;
+        if (job.status === "failed") failed += 1;
+        continue;
+      }
+      // The browser's own count is more up to date for analyses it runs.
+      const local = runner.status.get(id);
+      const part = local?.total ? local : job;
+      if (part.total) progress += Math.min(0.99, part.done / part.total);
+    }
+    const percent = Math.round((100 * progress) / ids.length);
+    fill.style.width = `${percent}%`;
+    fill.parentElement.setAttribute("aria-valuenow", String(percent));
+    text.textContent =
+      finished === ids.length
+        ? `Done: analysed ${plural(ids.length - failed, "game")}${failed ? `, ${failed} failed` : ""}.`
+        : `Analysed ${finished} of ${plural(ids.length, "game")}${failed ? ` (${failed} failed)` : ""}…`;
+    if (changed) loadStats(username);
+    if (finished === ids.length) return;
+    await sleep(2500);
   }
 }
 
@@ -507,7 +585,10 @@ async function loadStats(username) {
     body.hidden = true;
     return;
   }
-  status.textContent = `Based on ${plural(stats.games.length, "analysed game")}. Average centipawn loss: ${stats.acpl}.`;
+  status.replaceChildren(
+    `Based on ${plural(stats.games.length, "analysed game")}. Average centipawn loss: ${stats.acpl} `,
+    cplTip(),
+  );
   body.hidden = false;
   renderTrend(stats);
   document.getElementById("insights").replaceChildren(
@@ -521,20 +602,39 @@ function renderTrend(stats) {
   const svg = document.getElementById("trend");
   const games = stats.games;
   const width = Math.max(200, svg.clientWidth || 320);
-  const height = 120;
+  const height = 140;
   const pad = 10;
+  const left = 34; // room for the axis labels
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
-  const top = Math.max(50, ...games.map((g) => g.acpl));
-  const x = (i) => (games.length === 1 ? width / 2 : pad + ((width - 2 * pad) * i) / (games.length - 1));
+  // Round the axis up to a whole number of gridline steps.
+  const highest = Math.max(50, ...games.map((g) => g.acpl));
+  const step = [10, 20, 25, 50, 100, 200, 250, 500].find((s) => highest / s <= 4) ?? 1000;
+  const top = Math.ceil(highest / step) * step;
+  const x = (i) =>
+    games.length === 1 ? (left + width) / 2 : left + pad + ((width - left - 2 * pad) * i) / (games.length - 1);
   const y = (acpl) => height - pad - ((height - 2 * pad) * acpl) / top;
-  const nodes = [
-    svgEl("line", { class: "zero", x1: 0, x2: width, y1: y(0), y2: y(0) }),
-    svgEl("line", { class: "average", x1: 0, x2: width, y1: y(stats.acpl), y2: y(stats.acpl) }),
+  const nodes = [];
+  for (let tick = 0; tick <= top; tick += step) {
+    nodes.push(svgEl("line", { class: tick ? "grid" : "zero", x1: left, x2: width, y1: y(tick), y2: y(tick) }));
+    const label = svgEl("text", { class: "axis-label", x: left - 6, y: y(tick) + 4, "text-anchor": "end" });
+    label.textContent = String(tick);
+    nodes.push(label);
+  }
+  const axisTitle = svgEl("text", {
+    class: "axis-label",
+    transform: `translate(10,${height / 2}) rotate(-90)`,
+    "text-anchor": "middle",
+  });
+  axisTitle.textContent = "CPL";
+  nodes.push(
+    axisTitle,
+    svgEl("line", { class: "axis", x1: left, x2: left, y1: pad, y2: y(0) }),
+    svgEl("line", { class: "average", x1: left, x2: width, y1: y(stats.acpl), y2: y(stats.acpl) }),
     svgEl("path", {
       class: "line",
       d: games.map((g, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(g.acpl).toFixed(1)}`).join(""),
     }),
-  ];
+  );
   games.forEach((g, i) => {
     const link = svgEl("a", { href: `#/a/${encodeURIComponent(g.id)}` });
     const point = svgEl("circle", { class: `point ${g.result || ""}`, cx: x(i), cy: y(g.acpl), r: 5 });
@@ -547,7 +647,7 @@ function renderTrend(stats) {
   svg.replaceChildren(...nodes);
 
   document.getElementById("trend-caption").textContent =
-    "Average centipawn loss per game, oldest first; lower is better. The dashed line is your average. Tap a point to open the game.";
+    "Average centipawn loss (CPL) per game, oldest first; lower is better. The dashed line is your average. Tap a point to open the game.";
 }
 
 function renderProgressDetails(stats) {
@@ -556,7 +656,7 @@ function renderProgressDetails(stats) {
   const phases = Object.entries(stats.phases);
   if (phases.length) {
     children.push(
-      el("h3", { text: "Centipawn loss by phase" }),
+      el("h3", {}, "Centipawn loss by phase ", cplTip()),
       el(
         "div",
         { class: "phase-stats" },
@@ -575,17 +675,27 @@ function renderProgressDetails(stats) {
   if (categories.length) {
     const most = Math.max(...categories.map(([, n]) => n));
     children.push(
-      el("h3", { text: "Kinds of mistakes and blunders" }),
+      el("h3", { text: "Kinds of mistakes, misses and blunders" }),
+      el("p", { class: "muted small", text: "Tap one to see the moves." }),
       el(
         "ul",
-        { class: "alts" },
+        { class: "drill-list" },
         ...categories.map(([category, n]) =>
           el(
             "li",
-            { class: "alt wide" },
-            el("span", { text: CATEGORY_INFO[category]?.label ?? category }),
-            el("div", { class: "bar" }, el("div", { style: `width:${Math.round((100 * n) / most)}%` })),
-            el("span", { class: "muted small", text: String(n) }),
+            {},
+            el(
+              "details",
+              { class: "drill" },
+              el(
+                "summary",
+                { class: "alt wide" },
+                el("span", { text: CATEGORY_INFO[category]?.label ?? category }),
+                el("div", { class: "bar" }, el("div", { style: `width:${Math.round((100 * n) / most)}%` })),
+                el("span", { class: "muted small", text: String(n) }),
+              ),
+              errorMoveList(stats.category_moves?.[category] || [], n),
+            ),
           ),
         ),
       ),
@@ -594,7 +704,10 @@ function renderProgressDetails(stats) {
   if (stats.openings.length) {
     children.push(
       el("h3", { text: "Openings" }),
-      el("p", { class: "muted small", text: "Left book: the move where you left opening theory, on average." }),
+      el("p", {
+        class: "muted small",
+        text: "Left book: the move where you left opening theory, on average. Tap an opening to see its games.",
+      }),
       el(
         "table",
         { class: "openings" },
@@ -603,23 +716,7 @@ function renderProgressDetails(stats) {
           {},
           el("tr", {}, ...["Opening", "Games", "Left book", "Score"].map((h) => el("th", { text: h }))),
         ),
-        el(
-          "tbody",
-          {},
-          ...stats.openings.map((o) =>
-            el(
-              "tr",
-              {},
-              el("td", {}, el("span", { class: `piece-dot ${o.color}` }), o.name),
-              el("td", { text: String(o.games) }),
-              el("td", {
-                text: o.left_book === null ? "–" : `move ${o.left_book}`,
-                class: o.advice ? `advice-${o.advice}` : null,
-              }),
-              el("td", { text: o.score === null ? "–" : `${Math.round(o.score * 100)}%` }),
-            ),
-          ),
-        ),
+        el("tbody", {}, ...stats.openings.flatMap((o) => openingRows(o))),
       ),
     );
   }
@@ -667,6 +764,106 @@ function renderProgressDetails(stats) {
   box.replaceChildren(...children);
 }
 
+// The moves behind one kind of mistake, each opening its game at that move.
+function errorMoveList(moves, count) {
+  if (!moves.length) return el("p", { class: "muted small", text: "No moves to show." });
+  return el(
+    "div",
+    {},
+    el(
+      "ul",
+      { class: "jump-list" },
+      ...moves.map((m) =>
+        el(
+          "li",
+          {},
+          el(
+            "a",
+            { class: "button", href: `#/a/${encodeURIComponent(m.id)}/m/${m.ply}` },
+            el(
+              "span",
+              {},
+              el("span", { class: `piece-dot ${m.color}` }),
+              `${m.label}${CLASS_INFO[m.classification]?.sym ?? ""} vs ${m.opponent || "?"}`,
+              m.date ? el("span", { class: "muted", text: ` · ${m.date}` }) : null,
+            ),
+            el("span", { class: "muted", text: m.best_san ? `best ${m.best_san}` : "" }),
+          ),
+        ),
+      ),
+    ),
+    count > moves.length ? el("p", { class: "muted small", text: `The ${moves.length} most recent of ${count}.` }) : null,
+  );
+}
+
+// A row per opening, and a hidden row with its games that the name toggles.
+function openingRows(o) {
+  const games = o.game_list || [];
+  const details = el(
+    "tr",
+    { class: "opening-games", hidden: true },
+    el(
+      "td",
+      { colspan: "4" },
+      el(
+        "ul",
+        { class: "jump-list" },
+        ...games.map((g) =>
+          el(
+            "li",
+            {},
+            el(
+              "a",
+              {
+                class: "button",
+                // Open the game where the player left book, if they did.
+                href: `#/a/${encodeURIComponent(g.id)}${g.left_book_ply ? `/m/${g.left_book_ply}` : ""}`,
+              },
+              el(
+                "span",
+                {},
+                el("span", { class: `result-dot ${g.result || ""}`, text: { win: "W", loss: "L", draw: "D" }[g.result] || "?" }),
+                ` vs ${g.opponent || "?"}`,
+                g.date ? el("span", { class: "muted", text: ` · ${g.date}` }) : null,
+              ),
+              el("span", {
+                class: "muted",
+                text: g.left_book ? `left book on move ${g.left_book}` : "stayed in book",
+              }),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+  const toggle = el(
+    "button",
+    {
+      type: "button",
+      class: "link opening-name",
+      "aria-expanded": "false",
+      onclick: () => {
+        details.hidden = !details.hidden;
+        toggle.setAttribute("aria-expanded", String(!details.hidden));
+      },
+    },
+    el("span", { class: `piece-dot ${o.color}` }),
+    o.name,
+  );
+  const row = el(
+    "tr",
+    {},
+    el("td", {}, games.length ? toggle : [el("span", { class: `piece-dot ${o.color}` }), o.name]),
+    el("td", { text: String(o.games) }),
+    el("td", {
+      text: o.left_book === null ? "–" : `move ${o.left_book}`,
+      class: o.advice ? `advice-${o.advice}` : null,
+    }),
+    el("td", { text: o.score === null ? "–" : `${Math.round(o.score * 100)}%` }),
+  );
+  return games.length ? [row, details] : [row];
+}
+
 function gameRow(game) {
   const letter = { win: "W", loss: "L", draw: "D" }[game.result];
   const meta = [game.time_class, formatTimeControl(game.time_control), timeAgo(game.end_time)]
@@ -711,7 +908,8 @@ function gameRow(game) {
 
 // With `puzzlePly`, the analysis opens as a puzzle: the position before that
 // move, with the solution hidden.
-async function renderAnalysis(id, puzzlePly = null) {
+// With `startPly`, it opens at the position after that move.
+async function renderAnalysis(id, puzzlePly = null, startPly = null) {
   const token = routeToken;
   view.replaceChildren(document.getElementById("analysis-template").content.cloneNode(true));
   const pending = document.getElementById("pending");
@@ -733,7 +931,7 @@ async function renderAnalysis(id, puzzlePly = null) {
     if (job.status === "done") {
       pending.hidden = true;
       rememberAnalysis(id, job.result);
-      new AnalysisView(job.result, id, token, puzzlePly).mount();
+      new AnalysisView(job.result, id, token, puzzlePly, startPly).mount();
       return;
     }
     if (job.status === "failed") {
@@ -834,12 +1032,13 @@ function showDeviceFailure(job, message) {
 }
 
 class AnalysisView {
-  constructor(result, id, token, puzzlePly = null) {
+  constructor(result, id, token, puzzlePly = null, startPly = null) {
     this.result = result;
     this.id = id;
     this.token = token;
     this.moves = result.moves;
     this.ply = 0;
+    this.startPly = startPly ?? 0;
     this.showBest = false;
     this.showSolution = false;
     const h = result.headers;
@@ -860,7 +1059,7 @@ class AnalysisView {
     this.renderOpening();
     this.renderMeta();
     this.bindControls();
-    this.go(this.puzzle ? this.puzzle.ply - 1 : 0);
+    this.go(this.puzzle ? this.puzzle.ply - 1 : this.startPly);
   }
 
   // Whether the board shows the position of the open puzzle.
@@ -1063,6 +1262,10 @@ class AnalysisView {
       children.push(el("p", { class: "muted", text: "The only legal move." }));
     } else if (move.classification === "best") {
       children.push(el("p", { class: "muted", text: "The top choice." }));
+    } else if (move.classification === "great") {
+      children.push(el("p", { class: "muted", text: "The only good move in the position, and it was found." }));
+    } else if (move.classification === "brilliant") {
+      children.push(el("p", { class: "muted", text: "A sacrifice that works: material given up for a position that holds." }));
     } else if (move.best_san) {
       // Losses are capped at 10 pawns per side, so huge swings read better as evals.
       const lost =
@@ -1136,7 +1339,7 @@ class AnalysisView {
         el(
           "p",
           { class: "muted" },
-          move.classification === "best"
+          FOUND.includes(move.classification)
             ? `${who} found it in the game.`
             : `${who} played ${move.san} in the game.`,
         ),
@@ -1168,7 +1371,7 @@ class AnalysisView {
       "p",
       {},
       el("strong", { text: "Critical moment. " }),
-      move.classification === "best"
+      FOUND.includes(move.classification)
         ? `${move.san} was the only move that kept the balance; ${alternative}.`
         : `Only ${move.best_san} kept the balance; ${alternative}.`,
       " ",
@@ -1230,9 +1433,9 @@ class AnalysisView {
         marker.append(title);
         nodes.push(marker);
       }
-      if (["inaccuracy", "mistake", "blunder"].includes(move.classification)) {
+      if (MARKED.includes(move.classification) && move.eval_after !== null) {
         const marker = svgEl("circle", {
-          class: `marker ${move.classification}`,
+          class: `marker cls-${move.classification}`,
           cx: x(move.ply),
           cy: y(move.eval_after),
           r: move.classification === "inaccuracy" ? 4 : 5,
@@ -1313,7 +1516,7 @@ class AnalysisView {
           { class: "side" },
           el("h3", {}, el("span", { class: `piece-dot ${color}` }), name, this.me === color ? el("span", { class: "muted", text: "(you)" }) : null),
           el("div", { class: "stat", text: String(s.acpl) }),
-          el("div", { class: "stat-label", text: "average centipawn loss" }),
+          el("div", { class: "stat-label" }, "average centipawn loss ", cplTip()),
           el(
             "ul",
             { class: "counts" },
@@ -1370,7 +1573,7 @@ class AnalysisView {
               "button",
               { type: "button", onclick: () => this.startPuzzle(m) },
               el("span", {}, el("span", { class: "key", text: "◆ " }), m.label),
-              el("span", { class: "muted", text: m.classification === "best" ? "found" : `missed ${m.best_san}` }),
+              el("span", { class: "muted", text: FOUND.includes(m.classification) ? "found" : `missed ${m.best_san}` }),
             ),
           ),
         ),
@@ -1563,10 +1766,13 @@ class AnalysisView {
 function route() {
   routeToken += 1;
   const hash = location.hash.replace(/^#/, "");
-  const analysis = hash.match(/^\/a\/([\w-]+)(?:\/p\/(\d+))?$/);
+  const analysis = hash.match(/^\/a\/([\w-]+)(?:\/([pm])\/(\d+))?$/);
   const user = hash.match(/^\/u\/([^/]+)$/);
   window.scrollTo(0, 0);
-  if (analysis) renderAnalysis(analysis[1], analysis[2] ? Number(analysis[2]) : null);
+  if (analysis) {
+    const ply = analysis[3] ? Number(analysis[3]) : null;
+    renderAnalysis(analysis[1], analysis[2] === "p" ? ply : null, analysis[2] === "m" ? ply : null);
+  }
   else renderHome(user ? decodeURIComponent(user[1]) : null);
 }
 

@@ -161,3 +161,35 @@ def test_old_results_without_insights():
         del side["categories"], side["phases"], side["time"]
     stats = player_stats(records(old))
     assert (stats["categories"], stats["phases"], stats["time"]) == ({}, {}, None)
+
+
+def test_drill_down_into_mistakes_and_openings():
+    blunder = {
+        "ply": 9,
+        "color": "white",
+        "label": "5.Nxe5",
+        "classification": "blunder",
+        "category": "hung_piece",
+        "best_san": "d3",
+    }
+    inaccuracy = {**blunder, "ply": 11, "classification": "inaccuracy", "category": ""}
+    theirs = {**blunder, "ply": 10, "color": "black"}
+    old = result("2026.10.01", 30, deviation={"ply": 5, "color": "white"})
+    new = result("2026.10.02", 50)
+    book = {"color": "white", "classification": "book"}
+    old["moves"] = [book] * 8 + [blunder, theirs, inaccuracy]
+    new["moves"] = [book] * 8 + [{**blunder, "classification": "miss"}]
+    stats = player_stats(
+        [game_record(old, "alice", "a"), game_record(new, "alice", "b")]
+    )
+
+    hung = stats["category_moves"]["hung_piece"]
+    # Only the player's own errors, newest game first.
+    assert [(m["id"], m["ply"], m["classification"]) for m in hung] == [
+        ("b", 9, "miss"),
+        ("a", 9, "blunder"),
+    ]
+    assert hung[0]["opponent"] == "bob"
+
+    games = stats["openings"][0]["game_list"]
+    assert [(g["id"], g["left_book_ply"]) for g in games] == [("b", None), ("a", 5)]

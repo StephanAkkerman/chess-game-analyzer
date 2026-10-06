@@ -20,6 +20,7 @@ from chess_analyzer.insights import (
     categorize,
     game_phase,
     is_obvious,
+    material_offered,
     move_times,
     parse_time_control,
     time_flag,
@@ -145,3 +146,23 @@ def test_is_obvious():
     assert not is_obvious(board, board.parse_san("Nf6"))
     # Black's king in check with a single legal move.
     assert is_obvious(chess.Board("k7/8/1K6/8/8/8/8/R7 b - - 0 1"), M("a8b8"))
+
+
+def _position(pgn):
+    game = read_games(pgn)[0]
+    board = game.board()
+    moves = list(game.mainline_moves())
+    for move in moves[:-1]:
+        board.push(move)
+    return board, moves[-1]
+
+
+def test_material_offered():
+    # Bxf7+ gives a bishop for a pawn.
+    assert material_offered(*_position("1. e4 e5 2. Nf3 Nc6 3. Bc4 Nf6 4. Bxf7+")) == 2
+    # Taking a knight that is then taken back is a trade.
+    assert material_offered(*_position("1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Bxc6")) == 0
+    # A quiet move offers nothing.
+    assert material_offered(*_position("1. e4 e5 2. Nf3")) == 0
+    # Putting the queen where a knight takes it.
+    assert material_offered(*_position("1. e4 Nf6 2. Qg4")) == 9

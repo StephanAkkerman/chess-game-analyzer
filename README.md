@@ -11,7 +11,7 @@
 
 Chess Game Analyzer downloads your recent games from Chess.com, runs Stockfish over every move and checks the opening against established theory. Use it from your phone through the web app, or from the command line. For each game it reports:
 
-- your average centipawn loss and how many of your moves were best, good, inaccuracies, mistakes or blunders;
+- your average centipawn loss and a Chess.com-style review: how many of your moves were brilliant, great, best, good, inaccuracies, mistakes, misses or blunders;
 - your biggest mistakes, with the evaluation before and after, the move Stockfish preferred and what kind of error it was (a hung piece, a missed tactic, a spoiled endgame, …);
 - how you used your clock: mistakes played in under 3 seconds, mistakes made in time trouble and long thinks on obvious moves;
 - the move where you or your opponent left opening theory, and the book moves that score best from that position;
@@ -41,7 +41,7 @@ Across several games it shows how your accuracy develops over time, where you le
    - **Forced moves:** a position with only one legal move takes the evaluation of the position after it.
    - **Stockfish** searches everything else to depth 16 by default. It uses Stockfish 16 or later (the Docker image builds 17.1), which evaluates positions with its NNUE neural network.
 
-   Each move's centipawn loss is the drop in evaluation for the side that moved. Evaluations are capped at ±10 pawns, so going from "mate in 5" to "+15" does not count as a blunder. A loss of 50 centipawns or more is an inaccuracy, 100 or more a mistake, and 300 or more a blunder. Book and forced moves don't count towards the average centipawn loss.
+   Each move's centipawn loss is the drop in evaluation for the side that moved. Evaluations are capped at ±10 pawns, so going from "mate in 5" to "+15" does not count as a blunder. A loss of 50 centipawns or more is an inaccuracy, 100 or more a mistake, and 300 or more a blunder. As on Chess.com, a mistake or blunder that only missed a mate or a winning tactic, leaving you no worse than half a pawn down, is a *miss*; the only move that kept the balance in a critical moment is *great*; and a best (or nearly best) move that gives up a piece without making your position worse, from a position that was not already easily won, is *brilliant*. Book and forced moves don't count towards the average centipawn loss.
 5. **Explain the mistakes** (`chess_analyzer.insights`). Using the engine's best move and the opponent's best reply, each mistake and blunder gets a category. These are heuristics; they don't need any extra engine time:
 
    | Category | When |
@@ -118,7 +118,7 @@ Opening
     g6       55% score over 200 games
 
 Black: average centipawn loss 1020
-  2 book, 0 forced, 0 best, 0 good, 0 inaccuracy, 0 mistake, 1 blunder
+  2 book, 0 forced, 0 brilliant, 0 great, 0 best, 0 good, 0 inaccuracy, 0 mistake, 0 miss, 1 blunder
   Biggest mistakes:
     3...Nf6      blunder  -0.20 -> +M1  best was g6
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections import Counter
 
+from chess_analyzer.engine import ERRORS, FOUND
 from chess_analyzer.insights import (
     CATEGORIES,
     CATEGORY_LABELS,
@@ -39,6 +40,8 @@ NOTABLE_SHARE = 0.25
 # them to list.
 MIN_CRITICAL = 5
 MAX_PUZZLES = 10
+# The most moves to list for each kind of mistake.
+MAX_EXAMPLES = 20
 # Words that end the name of an opening family, as in "Sicilian Defense
 # Najdorf Variation".
 FAMILY_WORDS = ("Defense", "Defence", "Game", "Opening", "Gambit", "Attack", "System")
@@ -100,11 +103,12 @@ def game_record(
     opening = result.get("opening") or {}
     deviation = opening.get("deviation")
     left_book = None
+    left_book_ply = None
     opponent_left_book = None
     if deviation:
         move = (deviation["ply"] + 1) // 2
         if deviation["color"] == color:
-            left_book = move
+            left_book, left_book_ply = move, deviation["ply"]
         else:
             opponent_left_book = move
     date = headers.get("UTCDate") or headers.get("Date", "")
@@ -116,10 +120,21 @@ def game_record(
             "fen": m["fen_before"],
             "best_san": m["best_san"],
             "best_uci": m["best_uci"],
-            "found": m["classification"] == "best",
+            "found": m["classification"] in FOUND,
         }
         for ply in summary.get("critical") or []
         if 0 < ply <= len(moves) and (m := moves[ply - 1])
+    ]
+    errors = [
+        {
+            "ply": m["ply"],
+            "label": m["label"],
+            "classification": m["classification"],
+            "category": m["category"],
+            "best_san": m["best_san"],
+        }
+        for m in moves
+        if m["color"] == color and m["classification"] in ERRORS and m.get("category")
     ]
     return {
         "id": analysis_id,
@@ -132,12 +147,14 @@ def game_record(
         "opening": opening.get("name"),
         "opening_checked": opening.get("checked", False),
         "left_book": left_book,
+        "left_book_ply": left_book_ply,
         "opponent_left_book": opponent_left_book,
         "link": headers.get("Link"),
         "categories": summary.get("categories") or {},
         "phases": summary.get("phases") or {},
         "time": summary.get("time"),
         "critical": critical,
+        "errors": errors,
     }
 
 
@@ -199,6 +216,15 @@ def _openings(records: list[dict]) -> list[dict]:
                 "score": score,
                 "acpl": round(sum(g["acpl"] for g in games) / len(games)),
                 "advice": advice,
+                # Newest first, to open each game where it left book.
+                "game_list": [
+                    {
+                        k: g.get(k)
+                        for k in ("id", "date", "opponent", "result", "acpl")
+                        + ("left_book", "left_book_ply")
+                    }
+                    for g in reversed(games)
+                ],
             }
         )
     return sorted(openings, key=lambda o: (-o["games"], o["name"]))
@@ -321,6 +347,28 @@ def _insights(stats: dict) -> list[str]:
     return lines
 
 
+def error_moves(
+    records: list[dict], limit: int | None = MAX_EXAMPLES
+) -> dict[str, list[dict]]:
+    """List the mistakes, misses and blunders of each kind, newest first.
+
+    ``records`` are sorted oldest first, as in :func:`player_stats`.
+    """
+    moves: dict[str, list[dict]] = {}
+    for r in reversed(records):
+        for e in r.get("errors", []):
+            moves.setdefault(e["category"], []).append(
+                {
+                    "id": r["id"],
+                    "date": r["date"],
+                    "opponent": r["opponent"],
+                    "color": r["color"],
+                    **e,
+                }
+            )
+    return {c: moves[c][:limit] for c in CATEGORIES if c in moves}
+
+
 def puzzles(records: list[dict], limit: int | None = MAX_PUZZLES) -> list[dict]:
     """Turn the critical moments of the newest games into puzzles.
 
@@ -351,7 +399,8 @@ def player_stats(records: list[dict]) -> dict:
     -------
     dict
         ``games`` (oldest first, for the trendline), ``acpl``, ``trend``,
-        ``openings``, ``categories``, ``phases``, ``time``, ``critical``
+        ``openings`` (each with its games), ``categories``,
+        ``category_moves`` (the moves of each kind of mistake), ``phases``, ``time``, ``critical``
         (how many critical moments the player met and found), ``puzzles``
         (critical moments from the most recent games, newest first) and
         ``insights``, a list of sentences naming the clearest weaknesses.
@@ -374,6 +423,7 @@ def player_stats(records: list[dict]) -> dict:
         "trend": _trend(acpls),
         "openings": _openings(records),
         "categories": {c: categories[c] for c in CATEGORIES if categories[c]},
+        "category_moves": error_moves(records),
         "phases": _phases(records),
         "time": _time(records),
         "critical": {
