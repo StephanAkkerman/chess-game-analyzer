@@ -1,0 +1,14 @@
+# Get it from https://dash.cloudflare.com/profile/api-tokens
+cloudflare_api_token  = "paste-your-cloudflare-api-token"
+cloudflare_account_id = "paste-your-account-id"
+# Your own domain, delegated to Cloudflare nameservers.
+zone_name   = "akkerman.ai"
+subdomain   = "chess"
+tunnel_name = "chess-pi"
+# cloudflared runs inside docker compose (profile tunnel), so keep the service name.
+# If it runs on the Pi host instead, use the published port, e.g. http://localhost:8000
+tunnel_origin_url = "http://app:8000"
+
+# Optional Cloudflare Access gate (email one-time PIN) in front of the whole site.
+# Leave empty to rely on the app's ACCESS_CODE; a gate also blocks shared analysis links.
+access_allowed_emails = []

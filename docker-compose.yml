@@ -51,7 +51,8 @@ services:
       - caddy-config:/config
 
   # Alternative to Caddy: a Cloudflare Tunnel needs no port forwarding and
-  # hides your home IP. Point the tunnel's public hostname at http://app:8000.
+  # hides your home IP. infra/ (Terraform) creates the tunnel, which routes
+  # its public hostname to http://app:8000, and outputs the token.
   cloudflared:
     image: cloudflare/cloudflared:latest
     profiles: ["tunnel"]
