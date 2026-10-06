@@ -236,7 +236,16 @@ Expect roughly one to three minutes per game on a Pi 4 or 5. That's an estimate:
 3. Choose how the site is reached from the internet. Both options give you HTTPS on `chess.akkerman.ai`:
 
    - **Caddy** (`COMPOSE_PROFILES=caddy`, the default). Add a DNS `A` record for `chess.akkerman.ai` pointing to your home IP address, and forward ports 80 and 443 on your router to the Pi. Caddy gets a Let's Encrypt certificate on its own.
-   - **Cloudflare Tunnel** (`COMPOSE_PROFILES=tunnel`). Use this if you can't or don't want to open ports, or if your home IP address changes. It requires the domain's DNS to be on Cloudflare. In the Cloudflare dashboard, go to *Zero Trust → Networks → Tunnels*, create a tunnel and add the public hostname `chess.akkerman.ai` with service `http://app:8000`. Then put the tunnel token in `CLOUDFLARE_TUNNEL_TOKEN`.
+   - **Cloudflare Tunnel** (`COMPOSE_PROFILES=tunnel`). Use this if you can't or don't want to open ports, or if your home IP address changes. It requires the domain's DNS to be on Cloudflare. [`infra/`](infra/README.md) provisions the tunnel, its ingress and the DNS record with Terraform:
+
+     ```bash
+     cd infra
+     cp terraform.tfvars.example terraform.tfvars   # add your Cloudflare token and account ID
+     terraform init && terraform apply
+     terraform output -raw tunnel_token
+     ```
+
+     Put the token in `CLOUDFLARE_TUNNEL_TOKEN`. Prefer the dashboard? Create a tunnel under *Zero Trust → Networks → Tunnels* with the public hostname `chess.akkerman.ai` and service `http://app:8000`, and use its token instead.
 
 4. Start it:
 
