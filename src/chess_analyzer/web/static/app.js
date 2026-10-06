@@ -623,6 +623,39 @@ function renderProgressDetails(stats) {
       ),
     );
   }
+  if (stats.puzzles?.length) {
+    const { found, total } = stats.critical;
+    children.push(
+      el("h3", { text: "Puzzles from your games" }),
+      el("p", {
+        class: "muted small",
+        text: `Critical moments: positions where only one move kept the balance. You found it in ${found} of ${total}. Tap one to solve it again.`,
+      }),
+      el(
+        "ul",
+        { class: "jump-list" },
+        ...stats.puzzles.map((p) =>
+          el(
+            "li",
+            {},
+            el(
+              "a",
+              { class: "button", href: `#/a/${encodeURIComponent(p.id)}/p/${p.ply}` },
+              // The played move would give the answer away: name the move number.
+              el(
+                "span",
+                {},
+                el("span", { class: `piece-dot ${p.color}` }),
+                ` Move ${Math.ceil(p.ply / 2)} vs ${p.opponent || "?"}`,
+                p.date ? el("span", { class: "muted", text: ` · ${p.date}` }) : null,
+              ),
+              el("span", { class: p.found ? "muted" : "missed", text: p.found ? "found" : "missed" }),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
   const time = stats.time;
   if (time) {
     const parts = [`${formatSeconds(time.average)} per move on average`];
@@ -676,7 +709,9 @@ function gameRow(game) {
 
 // ---------------------------------------------------------------- analysis
 
-async function renderAnalysis(id) {
+// With `puzzlePly`, the analysis opens as a puzzle: the position before that
+// move, with the solution hidden.
+async function renderAnalysis(id, puzzlePly = null) {
   const token = routeToken;
   view.replaceChildren(document.getElementById("analysis-template").content.cloneNode(true));
   const pending = document.getElementById("pending");
@@ -698,7 +733,7 @@ async function renderAnalysis(id) {
     if (job.status === "done") {
       pending.hidden = true;
       rememberAnalysis(id, job.result);
-      new AnalysisView(job.result, id, token).mount();
+      new AnalysisView(job.result, id, token, puzzlePly).mount();
       return;
     }
     if (job.status === "failed") {
@@ -799,17 +834,21 @@ function showDeviceFailure(job, message) {
 }
 
 class AnalysisView {
-  constructor(result, id, token) {
+  constructor(result, id, token, puzzlePly = null) {
     this.result = result;
     this.id = id;
     this.token = token;
     this.moves = result.moves;
     this.ply = 0;
     this.showBest = false;
+    this.showSolution = false;
     const h = result.headers;
     const me = store.get("username", "");
     this.me = sameName(h.White, me) ? "white" : sameName(h.Black, me) ? "black" : null;
     this.flipped = this.me === "black";
+    // The critical move to solve as a puzzle, if any.
+    this.puzzle = this.moves[puzzlePly - 1]?.best_uci ? this.moves[puzzlePly - 1] : null;
+    if (this.puzzle) this.flipped = this.puzzle.color === "black";
   }
 
   mount() {
@@ -821,7 +860,17 @@ class AnalysisView {
     this.renderOpening();
     this.renderMeta();
     this.bindControls();
-    this.go(0);
+    this.go(this.puzzle ? this.puzzle.ply - 1 : 0);
+  }
+
+  // Whether the board shows the position of the open puzzle.
+  get solving() {
+    return this.puzzle !== null && this.ply === this.puzzle.ply - 1;
+  }
+
+  startPuzzle(move) {
+    this.puzzle = move;
+    this.go(move.ply - 1);
   }
 
   get current() {
@@ -844,6 +893,7 @@ class AnalysisView {
   go(ply) {
     this.ply = Math.max(0, Math.min(this.moves.length, ply));
     this.showBest = false;
+    this.showSolution = false;
     this.update();
   }
 
@@ -936,6 +986,7 @@ class AnalysisView {
       }
     }
     if (showBest) squares.push(this.arrow(this.current.best_uci));
+    else if (this.solving && this.showSolution) squares.push(this.arrow(this.puzzle.best_uci));
     this.board.replaceChildren(...squares);
     this.board.setAttribute(
       "aria-label",
@@ -983,6 +1034,10 @@ class AnalysisView {
   renderMoveInfo() {
     const box = document.getElementById("move-info");
     const move = this.current;
+    if (this.solving) {
+      box.replaceChildren(...this.puzzleInfo());
+      return;
+    }
     if (!move) {
       box.replaceChildren(
         el("div", { class: "headline" }, el("span", { class: "move", text: "Start" })),
@@ -1028,6 +1083,7 @@ class AnalysisView {
       });
       children.push(el("div", { class: "actions" }, toggle));
     }
+    if (move.critical) children.splice(2, 0, this.criticalNote(move));
     const category = CATEGORY_INFO[move.category];
     if (category) {
       const replier = this.sideLabel(move.color === "white" ? "black" : "white");
@@ -1052,6 +1108,72 @@ class AnalysisView {
       children.push(el("p", { class: "muted small", text: "Exact result from the endgame tablebase." }));
     }
     box.replaceChildren(...children);
+  }
+
+  // The puzzle prompt shown in the position before a critical move.
+  puzzleInfo() {
+    const move = this.puzzle;
+    const side = move.color === "white" ? "White" : "Black";
+    const who = this.me ? (move.color === this.me ? "You" : "Your opponent") : side;
+    const children = [
+      el(
+        "div",
+        { class: "headline" },
+        el("span", { class: "move", text: "Puzzle" }),
+        el("span", { class: "pill critical", text: "Critical moment" }),
+      ),
+      el("p", {}, `${side} to move. Only one move keeps the balance: can you find it?`),
+    ];
+    if (this.showSolution) {
+      children.push(
+        el(
+          "p",
+          {},
+          "The solution is ",
+          el("strong", { text: move.best_san }),
+          `. The next best move, ${move.second_san}, gives ${formatEval(move.second_eval)}.`,
+        ),
+        el(
+          "p",
+          { class: "muted" },
+          move.classification === "best"
+            ? `${who} found it in the game.`
+            : `${who} played ${move.san} in the game.`,
+        ),
+      );
+    }
+    children.push(
+      el(
+        "div",
+        { class: "actions row" },
+        el("button", {
+          type: "button",
+          class: this.showSolution ? null : "primary",
+          text: this.showSolution ? "Hide the solution" : "Show the solution",
+          onclick: () => {
+            this.showSolution = !this.showSolution;
+            this.renderBoard();
+            this.renderMoveInfo();
+          },
+        }),
+        el("button", { type: "button", text: "Show the game move", onclick: () => this.go(move.ply) }),
+      ),
+    );
+    return children;
+  }
+
+  criticalNote(move) {
+    const alternative = `the next best move, ${move.second_san}, gives ${formatEval(move.second_eval)}`;
+    return el(
+      "p",
+      {},
+      el("strong", { text: "Critical moment. " }),
+      move.classification === "best"
+        ? `${move.san} was the only move that kept the balance; ${alternative}.`
+        : `Only ${move.best_san} kept the balance; ${alternative}.`,
+      " ",
+      el("button", { type: "button", class: "link", text: "Try it as a puzzle", onclick: () => this.startPuzzle(move) }),
+    );
   }
 
   renderGraph() {
@@ -1096,6 +1218,18 @@ class AnalysisView {
       svgEl("line", { class: "cursor", x1: x(this.ply), x2: x(this.ply), y1: 0, y2: height }),
     );
     for (const move of this.moves) {
+      // Critical moments are marked at the position before the move.
+      if (move.critical && move.eval_before !== null) {
+        const [cx, cy] = [x(move.ply - 1), y(move.eval_before)];
+        const marker = svgEl("polygon", {
+          class: "marker critical",
+          points: `${cx},${cy - 6} ${cx + 6},${cy} ${cx},${cy + 6} ${cx - 6},${cy}`,
+        });
+        const title = svgEl("title");
+        title.textContent = `Critical moment before ${move.label}`;
+        marker.append(title);
+        nodes.push(marker);
+      }
       if (["inaccuracy", "mistake", "blunder"].includes(move.classification)) {
         const marker = svgEl("circle", {
           class: `marker ${move.classification}`,
@@ -1144,9 +1278,10 @@ class AnalysisView {
         type: "button",
         class: `cls-${move.classification}`,
         "data-ply": move.ply,
-        "aria-label": `${move.label}, ${info.label}`,
+        "aria-label": `${move.label}, ${info.label}${move.critical ? ", critical moment" : ""}`,
         onclick: () => this.go(move.ply),
       },
+      move.critical ? el("span", { class: "key", text: "◆", title: "Critical moment" }) : null,
       move.san,
       sym ? el("span", { class: "sym", text: sym }) : null,
     );
@@ -1209,10 +1344,37 @@ class AnalysisView {
                 ),
               )
             : el("p", { class: "muted small", text: "No mistakes or blunders." }),
+          this.criticalSummary(s.critical),
           this.categorySummary(s.categories),
           this.timeSummary(s.time),
         );
       }),
+    );
+  }
+
+  criticalSummary(plies) {
+    if (!plies?.length) return null;
+    const moves = plies.map((ply) => this.moves[ply - 1]);
+    return el(
+      "div",
+      {},
+      el("h4", { class: "small-heading", text: "Critical moments" }),
+      el(
+        "ul",
+        { class: "jump-list" },
+        ...moves.map((m) =>
+          el(
+            "li",
+            {},
+            el(
+              "button",
+              { type: "button", onclick: () => this.startPuzzle(m) },
+              el("span", {}, el("span", { class: "key", text: "◆ " }), m.label),
+              el("span", { class: "muted", text: m.classification === "best" ? "found" : `missed ${m.best_san}` }),
+            ),
+          ),
+        ),
+      ),
     );
   }
 
@@ -1401,10 +1563,10 @@ class AnalysisView {
 function route() {
   routeToken += 1;
   const hash = location.hash.replace(/^#/, "");
-  const analysis = hash.match(/^\/a\/([\w-]+)$/);
+  const analysis = hash.match(/^\/a\/([\w-]+)(?:\/p\/(\d+))?$/);
   const user = hash.match(/^\/u\/([^/]+)$/);
   window.scrollTo(0, 0);
-  if (analysis) renderAnalysis(analysis[1]);
+  if (analysis) renderAnalysis(analysis[1], analysis[2] ? Number(analysis[2]) : null);
   else renderHome(user ? decodeURIComponent(user[1]) : null);
 }
 

@@ -1,10 +1,17 @@
 import chess
-from test_engine import EVALS, FakeEngine
+from test_engine import CRITICAL_EVALS, CRITICAL_PGN, EVALS, FakeEngine
 
 from chess_analyzer.engine import MATE_SCORE, analyze_game
 from chess_analyzer.openings import BookMove, OpeningDeviation
 from chess_analyzer.parse import read_games
-from chess_analyzer.report import format_eval, format_game_report
+from chess_analyzer.report import (
+    format_eval,
+    format_game_report,
+    format_player_stats,
+    format_puzzles_pgn,
+)
+from chess_analyzer.serialize import result_to_dict
+from chess_analyzer.stats import game_record, player_stats
 
 
 def test_format_eval():
@@ -50,3 +57,33 @@ def test_report_without_opening_or_engine(scholars_mate_pgn):
     report = format_game_report(game, None, show_opening=False)
     assert "\nOpening\n" not in report
     assert "centipawn" not in report
+
+
+def test_critical_moments_in_reports_and_puzzles():
+    game = read_games(CRITICAL_PGN)[0]
+    game.headers.update(White="alice", Black="bob", Date="2026.10.01")
+    analysis = analyze_game(game, FakeEngine(CRITICAL_EVALS))
+
+    report = format_game_report(game, chess.BLACK, analysis, show_opening=False)
+    assert "Critical moments (only one move kept the balance):" in report
+    assert "2...Nc6      found; d6 would give +3.30" in report
+    assert "3...Bc5      missed, best was Nf6; Bc5 would give +4.00" in report
+
+    result = result_to_dict(game, analysis, None, False, None, "depth 16")
+    assert result["summary"]["black"]["critical"] == [4, 6]
+    record = game_record(result, "bob", "abc")
+    stats = player_stats([record])
+    assert stats["critical"] == {"total": 2, "found": 1}
+    puzzle = stats["puzzles"][1]
+    assert (puzzle["id"], puzzle["label"], puzzle["found"]) == ("abc", "3...Bc5", False)
+    assert puzzle["fen"] == analysis.moves[5].fen_before
+    assert "you found the only good move in 1 of 2" in format_player_stats(stats, "bob")
+
+    pgn = format_puzzles_pgn(stats["puzzles"])
+    puzzles = read_games(pgn)
+    assert len(puzzles) == 2
+    second = puzzles[1]
+    assert second.board().fen() == puzzle["fen"]
+    assert second.headers["Event"] == "Critical moment, move 3, Black to move"
+    assert second.next().move.uci() == "g8f6"
+    assert "3...Bc5 was played" in second.next().comment

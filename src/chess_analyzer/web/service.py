@@ -55,7 +55,7 @@ TablebaseFactory = Callable[[], Tablebase | None]
 
 # Part of the key that identifies an analysis. Raise it when results gain new
 # information, so games are analysed again rather than served from old results.
-ANALYSIS_VERSION = 2
+ANALYSIS_VERSION = 3
 
 
 class InvalidGame(ValueError):

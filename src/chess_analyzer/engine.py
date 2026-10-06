@@ -6,6 +6,10 @@ Each position is evaluated by the cheapest source that can answer it:
 2. Positions with few pieces are looked up in Syzygy endgame tablebases.
 3. A position with a single legal move takes the evaluation of the next one.
 4. Everything else is searched by a UCI engine such as Stockfish.
+
+Roughly equal positions are then searched again for the second-best move,
+which shows the critical moments of a game: positions where only one move
+keeps the balance.
 """
 
 from __future__ import annotations
@@ -38,6 +42,14 @@ MATE_THRESHOLD = MATE_SCORE - 500
 INACCURACY = 50
 MISTAKE = 100
 BLUNDER = 300
+
+# A critical moment is a position where the side to move stands roughly equal
+# (within CRITICAL_EQUAL) with the best move, but the second-best move leaves
+# it at least CRITICAL_DROP behind. At most CRITICAL_PER_GAME are kept per
+# side, those with the largest gap between the two moves.
+CRITICAL_EQUAL = 100
+CRITICAL_DROP = 200
+CRITICAL_PER_GAME = 3
 
 CLASSIFICATIONS = (
     "book",
@@ -94,6 +106,10 @@ class MoveAnalysis:
     book positions that were never evaluated. ``source`` and
     ``source_before`` say how ``eval_after`` and ``eval_before`` were obtained.
 
+    ``second_san`` and ``second_eval`` give the engine's second-best move in
+    the position before the move and its evaluation, when it was searched.
+    ``critical`` marks a critical moment: see :func:`is_critical`.
+
     ``reply_uci`` and ``reply_san`` give the opponent's best reply, ``phase``
     the game phase and ``category`` what kind of error a mistake or blunder
     was (see :mod:`chess_analyzer.insights`). ``clock`` and ``time_spent``
@@ -122,6 +138,9 @@ class MoveAnalysis:
     clock: float | None = None
     time_spent: float | None = None
     time_flag: str = ""
+    second_san: str = ""
+    second_eval: int | None = None
+    critical: bool = False
 
     @property
     def move_number(self) -> int:
@@ -170,6 +189,10 @@ class GameAnalysis:
             if m.classification in ("mistake", "blunder")
         ]
         return sorted(bad, key=lambda m: m.cp_loss, reverse=True)[:n]
+
+    def critical_moments(self, color: chess.Color) -> list[MoveAnalysis]:
+        """Return the critical moments where ``color`` was to move, in order."""
+        return [m for m in self.for_color(color) if m.critical]
 
     def categories(self, color: chess.Color) -> Counter:
         """Count the kinds of mistakes and blunders ``color`` made."""
@@ -310,11 +333,17 @@ def open_tablebase(path: str) -> chess.syzygy.Tablebase:
 
 @dataclass
 class Evaluation:
-    """Score (White's point of view) and best move of a position."""
+    """Score (White's point of view) and best move of a position.
+
+    ``second`` and ``second_score`` are the second-best move and its score,
+    when the engine was asked for them.
+    """
 
     score: int
     best: chess.Move | None
     source: str
+    second: chess.Move | None = None
+    second_score: int | None = None
 
 
 def _terminal_score(board: chess.Board) -> int:
@@ -382,12 +411,78 @@ def _probe(tablebase: Tablebase | None, board: chess.Board) -> Evaluation | None
 
 
 def _search(
-    engine: chess.engine.SimpleEngine, board: chess.Board, limit: chess.engine.Limit
+    engine: chess.engine.SimpleEngine,
+    board: chess.Board,
+    limit: chess.engine.Limit,
+    root_moves: list[chess.Move] | None = None,
 ) -> Evaluation:
-    info = engine.analyse(board, limit)
+    """Search ``board``, only among ``root_moves`` if given."""
+    if root_moves is None:
+        info = engine.analyse(board, limit)
+    else:
+        info = engine.analyse(board, limit, root_moves=root_moves)
     score = info["score"].white().score(mate_score=MATE_SCORE)
     pv = info.get("pv") or [None]
     return Evaluation(score, pv[0], ENGINE)
+
+
+def _search_second(
+    engine: chess.engine.SimpleEngine,
+    board: chess.Board,
+    limit: chess.engine.Limit,
+    evaluation: Evaluation,
+) -> None:
+    """Find the second-best move by searching every move but the best one.
+
+    That is cheaper than asking the engine for two lines at once.
+    """
+    others = [m for m in board.legal_moves if m != evaluation.best]
+    if not others:
+        return
+    second = _search(engine, board, limit, root_moves=others)
+    if second.best is not None:
+        evaluation.second, evaluation.second_score = second.best, second.score
+
+
+def _may_be_critical(
+    board: chess.Board,
+    move: chess.Move,
+    evals: list[Evaluation | None],
+    i: int,
+) -> bool:
+    """Return whether position ``i`` could be a critical moment.
+
+    Only searched, roughly equal positions qualify. When the game move was
+    not the best one but kept the side to move above ``-CRITICAL_DROP``, the
+    second-best move is at least as good, so the position is not critical.
+    """
+    before, after = evals[i], evals[i + 1]
+    if before is None or after is None or before.source != ENGINE:
+        return False
+    if before.best is None or insights.is_obvious(board, before.best):
+        return False
+    sign = 1 if board.turn == chess.WHITE else -1
+    if abs(_cap(before.score)) > CRITICAL_EQUAL:
+        return False
+    return move == before.best or sign * _cap(after.score) <= -CRITICAL_DROP
+
+
+def is_critical(
+    board: chess.Board, before: Evaluation, best_score: int, second_score: int
+) -> bool:
+    """Return whether only one move keeps the balance in ``board``.
+
+    ``best_score`` and ``second_score`` are the evaluations of the best and
+    second-best move from the point of view of the side to move. The best move
+    must keep the position roughly equal, and the second-best must lose at
+    least :data:`CRITICAL_DROP`. Plain recaptures are left out: taking back a
+    piece is usually the only good move, but it is not a decision.
+    """
+    if before.best is None or before.second is None:
+        return False
+    if abs(best_score) > CRITICAL_EQUAL or second_score > -CRITICAL_DROP:
+        return False
+    return not insights.is_obvious(board, before.best)
 
 
 def _cap(cp: int) -> int:
@@ -401,6 +496,7 @@ def analyze_game(
     on_progress: Callable[[int, int], None] | None = None,
     book_plies: Collection[int] = (),
     tablebase: Tablebase | None = None,
+    critical: bool = True,
 ) -> GameAnalysis:
     """Evaluate every move of a game, searching as few positions as possible.
 
@@ -425,6 +521,10 @@ def analyze_game(
         :func:`chess_analyzer.openings.book_plies`.
     tablebase : Tablebase, optional
         Syzygy tablebases. Positions they cover are not searched.
+    critical : bool, optional
+        Find the game's critical moments, by searching the roughly equal
+        positions again for the second-best move. Costs some extra engine
+        time.
 
     Returns
     -------
@@ -466,6 +566,21 @@ def analyze_game(
         if on_progress is not None:
             on_progress(done, total)
 
+    if critical:
+        # Search the positions that may be critical again, for the
+        # second-best move.
+        candidates = [
+            i
+            for i in range(n)
+            if i + 1 not in book and _may_be_critical(boards[i], moves[i], evals, i)
+        ]
+        total += len(candidates)
+        for i in reversed(candidates):
+            _search_second(engine, boards[i], limit, evals[i])
+            done += 1
+            if on_progress is not None:
+                on_progress(done, total)
+
     times, base = insights.move_times(game)
     analysis = GameAnalysis(sources=Counter(e.source if e else BOOK for e in evals))
     for ply, move in enumerate(moves, start=1):
@@ -488,6 +603,8 @@ def analyze_game(
             )
             classification = classify(cp_loss, move == best)
         reply = after.best if after else None
+        second = before.second if before and classification != "book" else None
+        second_score = before.second_score if second else None
         category = ""
         if classification in ("mistake", "blunder"):
             category = insights.categorize(
@@ -525,6 +642,25 @@ def analyze_game(
                 time_flag=insights.time_flag(
                     classification, time, base, insights.is_obvious(board, move)
                 ),
+                second_san=board.san(second) if second else "",
+                second_eval=second_score,
             )
         )
+        if second is not None and is_critical(
+            board, before, sign * _cap(before.score), sign * _cap(second_score)
+        ):
+            analysis.moves[-1].critical = True
+    _keep_most_critical(analysis)
     return analysis
+
+
+def _keep_most_critical(analysis: GameAnalysis) -> None:
+    """Keep the :data:`CRITICAL_PER_GAME` sharpest critical moments per side."""
+    for color in (chess.WHITE, chess.BLACK):
+        moments = analysis.critical_moments(color)
+
+        def gap(m: MoveAnalysis) -> int:
+            return abs(_cap(m.eval_before) - _cap(m.second_eval))
+
+        for m in sorted(moments, key=gap, reverse=True)[CRITICAL_PER_GAME:]:
+            m.critical = False

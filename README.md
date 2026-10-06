@@ -14,7 +14,8 @@ Chess Game Analyzer downloads your recent games from Chess.com, runs Stockfish o
 - your average centipawn loss and how many of your moves were best, good, inaccuracies, mistakes or blunders;
 - your biggest mistakes, with the evaluation before and after, the move Stockfish preferred and what kind of error it was (a hung piece, a missed tactic, a spoiled endgame, …);
 - how you used your clock: mistakes played in under 3 seconds, mistakes made in time trouble and long thinks on obvious moves;
-- the move where you or your opponent left opening theory, and the book moves that score best from that position.
+- the move where you or your opponent left opening theory, and the book moves that score best from that position;
+- the critical moments: the few positions where only one move kept the game balanced, and whether you found it. These become puzzles from your own games.
 
 Across several games it shows how your accuracy develops over time, where you leave book in each opening, in which phase of the game you lose the most, and which kinds of mistakes you make most often.
 
@@ -54,7 +55,8 @@ Across several games it shows how your accuracy develops over time, where you le
    | Positional | None of the above. |
 
    Each move is also put in a phase: the endgame starts once at most six queens, rooks, bishops and knights are left, and the opening lasts until move 10 unless pieces are traded off earlier. From Chess.com's clock times (`[%clk]`), mistakes played in under 3 seconds are flagged as impulsive, those with less than 10% of the starting time left as made in time trouble, and long thinks (10% of the starting time, at most two minutes) on forced moves or plain recaptures as wasted time.
-6. **Look for patterns across games** (`chess_analyzer.stats`). Your average centipawn loss per game shows whether your play is getting more accurate. Openings are grouped by family (e.g. *Sicilian Defense*), with the move where you leave book on average: leaving it by move 6 means the opening is worth studying, while staying in book past move 12 means your time is better spent on the middlegame. Together with the loss per phase, the most common kind of mistake and your time management, this gives a short list of what to work on.
+6. **Find the critical moments** (`chess_analyzer.engine`). Most moves are developing moves or recaptures; a game is usually decided in a few positions where only one move holds. A position is a critical moment when the best move keeps it roughly equal (within ±1 pawn) and the second-best move leaves the side to move at least 2 pawns behind. Plain recaptures don't count, and at most three critical moments are kept per side, those with the largest gap between the two moves. To find the second-best move, the engine searches the position again without its best move. That is only needed in roughly equal positions where the best move was played or the game move lost at least 2 pawns (otherwise the game move itself shows that a second move holds), which kept the extra engine time to about 25% on a test game; games with long stretches of engine-best moves outside the opening book cost more. `--no-critical` skips it.
+7. **Look for patterns across games** (`chess_analyzer.stats`). Your average centipawn loss per game shows whether your play is getting more accurate. Openings are grouped by family (e.g. *Sicilian Defense*), with the move where you leave book on average: leaving it by move 6 means the opening is worth studying, while staying in book past move 12 means your time is better spent on the middlegame. Together with the loss per phase, the most common kind of mistake and your time management, this gives a short list of what to work on.
 
 ## Installation ⚙️
 
@@ -98,6 +100,8 @@ Some useful options:
 | `--book FILE` | Use a local Polyglot opening book instead of the Lichess explorer. |
 | `--explorer lichess\|masters\|none` | Lichess explorer database to use, or `none` to skip the opening check. |
 | `--opening-plies N` | How many half-moves count as the opening (default 30). |
+| `--no-critical` | Don't look for critical moments, which saves some engine time. |
+| `--puzzles FILE` | Write your critical moments to `FILE` as PGN puzzles, newest first, with the best move as the solution. Lichess studies and most chess apps can import it. |
 
 If the Lichess explorer asks for authentication, create a [personal API token](https://lichess.org/account/oauth/token) and set it as `LICHESS_TOKEN`.
 
@@ -173,9 +177,10 @@ The web app is the easiest way to use the analyzer from a phone. Enter a Chess.c
 - each move's classification. Inaccuracies, mistakes and blunders also show the engine's best move, and "Show best move" draws it on the board. Mistakes and blunders say what kind of error they were, and every move shows how long it took;
 - an evaluation graph. Tap or drag on it to jump through the game;
 - both players' average centipawn loss and biggest mistakes;
-- where the game left opening theory, and how the book moves score.
+- where the game left opening theory, and how the book moves score;
+- the critical moments, marked ◆ in the move list and on the graph. "Try it as a puzzle" shows the position before the move with the solution hidden.
 
-Under **Your progress**, the games list shows statistics over all your games that have been analysed: your average centipawn loss per game over time, the loss per game phase, the kinds of mistakes you make, where you leave book in each opening, how you use your clock, and what to work on. **Analyse the 10 most recent** queues your recent games, so the statistics fill in as they finish.
+Under **Your progress**, the games list shows statistics over all your games that have been analysed: your average centipawn loss per game over time, the loss per game phase, the kinds of mistakes you make, where you leave book in each opening, how you use your clock, and what to work on. **Puzzles from your games** lists the critical moments of your most recent games, so you can solve the positions that decided them again. **Analyse the 10 most recent** queues your recent games, so the statistics fill in as they finish.
 
 ### Stockfish on your own device
 

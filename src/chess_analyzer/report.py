@@ -121,6 +121,19 @@ def format_game_report(
                     f"{format_eval(m.eval_after, m.source)}  "
                     f"best was {m.best_san}{kind}"
                 )
+            critical = analysis.critical_moments(c)
+            if critical:
+                lines.append("  Critical moments (only one move kept the balance):")
+            for m in critical:
+                verdict = (
+                    "found"
+                    if m.classification == "best"
+                    else f"missed, best was {m.best_san}"
+                )
+                lines.append(
+                    f"    {m.label:<12} {verdict}; {m.second_san} would give "
+                    f"{format_eval(m.second_eval)}"
+                )
             if time := format_time_summary(analysis.time_summary(c)):
                 lines.append(f"  Time: {time}")
     if analysis is not None:
@@ -196,9 +209,53 @@ def format_player_stats(stats: dict, username: str) -> str:
                 f"  {o['name'][:34]:<34} {o['color']:<5}  {o['games']} games  "
                 f"left book: {left}"
             )
+    if stats["critical"]["total"]:
+        critical = stats["critical"]
+        found = f"{critical['found']} of {critical['total']}"
+        lines += ["", f"Critical moments: you found the only good move in {found}"]
+        for puzzle in stats["puzzles"]:
+            verdict = "found" if puzzle["found"] else "missed"
+            lines.append(
+                f"  {puzzle['date'] or '?':<10}  {puzzle['label']:<12} {verdict:<6}  "
+                f"{puzzle['fen']}"
+            )
     if time := format_time_summary(stats["time"]):
         lines += ["", f"Time: {time}"]
     if stats["insights"]:
         lines += ["", "What to work on"]
         lines += [f"  - {line}" for line in stats["insights"]]
     return "\n".join(lines)
+
+
+def format_puzzles_pgn(puzzles: list[dict]) -> str:
+    """Write critical moments as PGN puzzles.
+
+    Each puzzle starts from the position before the critical move, with the
+    engine's best move as the solution. ``puzzles`` come from
+    :func:`chess_analyzer.stats.puzzles`. Lichess studies and most chess apps
+    can import the result.
+    """
+    games = []
+    for puzzle in puzzles:
+        game = chess.pgn.Game()
+        board = chess.Board(puzzle["fen"])
+        game.setup(board)
+        # The game move would give the solution away when it was found.
+        side = "White" if board.turn == chess.WHITE else "Black"
+        move_number = (puzzle["ply"] + 1) // 2
+        game.headers["Event"] = f"Critical moment, move {move_number}, {side} to move"
+        game.headers["Site"] = puzzle.get("link") or "?"
+        game.headers["Date"] = (puzzle.get("date") or "????-??-??").replace("-", ".")
+        game.headers["Result"] = "*"
+        if opponent := puzzle.get("opponent"):
+            game.headers["Opponent"] = opponent
+        move = chess.Move.from_uci(puzzle["best_uci"]) if puzzle["best_uci"] else None
+        if move is not None and move in board.legal_moves:
+            node = game.add_variation(move)
+            node.comment = "The only move that keeps the balance." + (
+                ""
+                if puzzle["found"]
+                else f" In the game, {puzzle['label']} was played."
+            )
+        games.append(str(game))
+    return "\n\n".join(games) + "\n" if games else ""
