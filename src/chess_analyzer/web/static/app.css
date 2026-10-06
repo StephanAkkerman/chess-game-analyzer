@@ -397,6 +397,7 @@ dialog input { width: 100%; margin: 8px 0; }
 .graph .marker.inaccuracy { fill: var(--warning); }
 .graph .marker.mistake { fill: var(--serious); }
 .graph .marker.blunder { fill: var(--critical); }
+.graph .marker.critical { fill: var(--focus); }
 
 /* Move list */
 .moves {
@@ -424,6 +425,21 @@ dialog input { width: 100%; margin: 8px 0; }
 .moves button.current { background: var(--surface-2); outline: 1px solid var(--border); }
 .moves .sym { font-weight: 800; color: var(--cls); }
 
+/* Critical moments */
+.key { color: var(--focus); font-size: 0.75em; }
+.pill.critical { --cls: var(--focus); }
+button.link {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: underline;
+}
+.small-heading { font-size: 0.85rem; margin: 10px 0 0; color: var(--text-2); }
+.missed { color: var(--serious); font-weight: 600; }
+
 /* Summary */
 .summary { display: grid; gap: 16px; }
 @media (min-width: 520px) { .summary { grid-template-columns: 1fr 1fr; } }
@@ -442,7 +458,7 @@ dialog input { width: 100%; margin: 8px 0; }
   margin-right: 8px;
 }
 .jump-list { list-style: none; padding: 0; margin: 0; }
-.jump-list button {
+.jump-list button, .jump-list .button {
   width: 100%;
   justify-content: space-between;
   min-height: 36px;

@@ -55,6 +55,9 @@ def move_to_dict(move: MoveAnalysis) -> dict:
         "clock": move.clock,
         "time_spent": move.time_spent,
         "time_flag": move.time_flag,
+        "second_san": move.second_san,
+        "second_eval": move.second_eval,
+        "critical": move.critical,
     }
 
 
@@ -64,6 +67,7 @@ def summary_to_dict(analysis: GameAnalysis, color: chess.Color) -> dict:
         "acpl": round(analysis.average_cp_loss(color)),
         "counts": {k: counts.get(k, 0) for k in CLASSIFICATIONS},
         "worst": [m.ply for m in analysis.worst_moves(color)],
+        "critical": [m.ply for m in analysis.critical_moments(color)],
         "categories": dict(analysis.categories(color)),
         "phases": {
             phase: {"acpl": round(acpl), "moves": moves}

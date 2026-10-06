@@ -3,6 +3,7 @@ import chess.engine
 import pytest
 
 from chess_analyzer.engine import (
+    CRITICAL_PER_GAME,
     MATE_SCORE,
     TABLEBASE_WIN,
     analyze_game,
@@ -29,17 +30,37 @@ EVALS = [
 
 
 class FakeEngine:
+    """Answer searches from a list of evaluations, keyed by ply.
+
+    Each entry is ``(score, best)``, or ``(score, best, second_score,
+    second)`` to also answer a search that leaves out the best move. Without
+    a second line, another move scores as well as the best one.
+    """
+
     def __init__(self, evals):
         self.evals = evals
         self.calls = 0
+        # The plies searched without their best move.
+        self.excluded = []
 
-    def analyse(self, board, limit):
-        self.calls += 1
-        score, best = self.evals[len(board.move_stack)]  # keyed by ply
+    @staticmethod
+    def _info(score, move):
         return {
             "score": chess.engine.PovScore(chess.engine.Cp(score), chess.WHITE),
-            "pv": [chess.Move.from_uci(best)],
+            "pv": [chess.Move.from_uci(move)],
         }
+
+    def analyse(self, board, limit, root_moves=None):
+        self.calls += 1
+        ply = len(board.move_stack)
+        entry = self.evals[ply]
+        if root_moves is None:
+            return self._info(*entry[:2])
+        assert chess.Move.from_uci(entry[1]) not in root_moves
+        self.excluded.append(ply)
+        if len(entry) == 2:  # no second line given: another move holds
+            return self._info(entry[0], root_moves[0].uci())
+        return self._info(*entry[2:4])
 
 
 @pytest.mark.parametrize(
@@ -61,7 +82,7 @@ def test_classify(loss, best, expected):
 def test_analyze_game_with_fake_engine(scholars_mate_pgn):
     game = read_games(scholars_mate_pgn)[0]
     engine = FakeEngine(EVALS)
-    analysis = analyze_game(game, engine)
+    analysis = analyze_game(game, engine, critical=False)
 
     # The final, checkmated position is scored without asking the engine.
     assert engine.calls == 7
@@ -108,7 +129,7 @@ def test_analyze_game_with_stockfish(scholars_mate_pgn):
 def test_book_moves_are_not_searched(scholars_mate_pgn):
     game = read_games(scholars_mate_pgn)[0]
     engine = FakeEngine(EVALS)
-    analysis = analyze_game(game, engine, book_plies={1, 2, 3, 4, 5})
+    analysis = analyze_game(game, engine, book_plies={1, 2, 3, 4, 5}, critical=False)
 
     # Only the position before the first non-book move and the one after it.
     assert engine.calls == 2
@@ -221,3 +242,75 @@ def test_clock_times_and_flags():
     assert (summary["errors"], summary["impulsive"]) == (1, 1)
     assert analysis.categories(chess.BLACK) == {"allowed_mate": 1}
     assert analysis.phase_cp_loss(chess.WHITE) == {"opening": (50 / 4, 4)}
+
+
+# Positions searched with two lines; see test_critical_moments.
+CRITICAL_PGN = "1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 4. Ng5 Nh6 5. Nxf7 Nxf7 6. Bxf7+ Kxf7 *"
+
+
+CRITICAL_EVALS = [
+    (30, "e2e4", 20, "d2d4"),
+    (30, "e7e5", 50, "c7c5"),
+    (30, "g1f3", 10, "b1c3"),
+    # Only Nc6 holds: Black stays equal, the next move loses 3 pawns.
+    (30, "b8c6", 330, "d7d6"),
+    (30, "f1c4", -20, "f1b5"),
+    # Black misses the only move: Nf6 holds, Bc5 is the game move.
+    (30, "g8f6", 400, "f8c5"),
+    (250, "f3g5", 100, "b1c3"),
+    # Equal, but the second move is fine: not critical.
+    (-50, "d7d5", -20, "g8h6"),
+    # Only Nxf7 keeps White level.
+    (0, "g5f7", -300, "c4f7"),
+    # A plain recapture is left out even when only it holds.
+    (0, "h6f7", 900, "d8f6"),
+    (-80, "c4f7", -400, "d2d3"),
+    (0, "e8f7", MATE_SCORE, "e8e7"),
+    (0, "d2d3"),
+]
+
+
+def test_critical_moments():
+    game = read_games(CRITICAL_PGN)[0]
+    engine = FakeEngine(CRITICAL_EVALS)
+    analysis = analyze_game(game, engine)
+
+    # Every position is searched once, then the ones that may be critical
+    # again without their best move. Those not equal (4.Ng5), where the game
+    # move already shows a second move that holds (4...Nh6) and recaptures
+    # are not.
+    assert engine.calls == 13 + 7
+    assert engine.excluded == [8, 5, 4, 3, 2, 1, 0]
+    critical = [m.label for m in analysis.moves if m.critical]
+    assert critical == ["2...Nc6", "3...Bc5", "5.Nxf7"]
+    nc6, bc5 = analysis.critical_moments(chess.BLACK)
+    assert (nc6.classification, nc6.second_san, nc6.second_eval) == ("best", "d6", 330)
+    assert (bc5.best_san, bc5.second_san) == ("Nf6", "Bc5")
+    # Bxf7+ and Kxf7 are recaptures: excluded.
+    assert not analysis.moves[10].critical
+    assert not analysis.moves[11].critical
+
+
+def test_critical_moments_are_limited_per_game():
+    game = read_games("1. Nf3 Nf6 2. Ng1 Ng8 3. Nf3 Nf6 4. Ng1 Ng8 5. Nf3 *")[0]
+    evals = []
+    for ply in range(10):
+        knight = ["g1f3", "g8f6", "f3g1", "f6g8"][ply % 4]
+        if ply % 2 == 0:
+            # Every White move is critical, with a growing gap.
+            evals.append((0, knight, -300 - 10 * ply, "b1c3"))
+        else:
+            evals.append((0, knight, 0, "b8c6"))
+    analysis = analyze_game(game, FakeEngine(evals))
+    white = analysis.critical_moments(chess.WHITE)
+    assert len(white) == CRITICAL_PER_GAME
+    assert [m.ply for m in white] == [5, 7, 9]
+    assert analysis.critical_moments(chess.BLACK) == []
+
+
+def test_critical_moments_can_be_skipped(scholars_mate_pgn):
+    game = read_games(scholars_mate_pgn)[0]
+    engine = FakeEngine(EVALS)
+    analysis = analyze_game(game, engine, critical=False)
+    assert engine.excluded == []
+    assert not any(m.critical or m.second_san for m in analysis.moves)

@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 import pytest
 import requests
 from fastapi.testclient import TestClient
-from test_engine import EVALS, FakeEngine
+from test_engine import CRITICAL_EVALS, CRITICAL_PGN, EVALS, FakeEngine
 from test_openings import FakeSource
 
 from chess_analyzer.web.app import create_app, game_summary
@@ -31,10 +31,10 @@ def wait_for(client, job_id, timeout=10):
     raise AssertionError("analysis did not finish")
 
 
-def make_client(tmp_path, opening=None, chesscom=None, **settings):
+def make_client(tmp_path, opening=None, chesscom=None, evals=EVALS, **settings):
     app = create_app(
         Settings(data_dir=tmp_path, **settings),
-        engine_factory=lambda: QuittableEngine(EVALS),
+        engine_factory=lambda: QuittableEngine(evals),
         opening_factory=lambda: opening,
         chesscom=chesscom or MagicMock(),
     )
@@ -50,8 +50,9 @@ def test_analysis_round_trip(tmp_path, scholars_mate_pgn):
 
     assert job["status"] == "done"
     # Five book moves need no evaluation: only the three positions from the
-    # deviation on are looked at (the last one is checkmate).
-    assert (job["done"], job["total"]) == (3, 3)
+    # deviation on are looked at (the last one is checkmate). The one before
+    # 3...Nf6 is searched again, to see whether it is a critical moment.
+    assert (job["done"], job["total"]) == (4, 4)
     result = job["result"]
     assert result["positions"] == {"book": 5, "engine": 2, "terminal": 1}
     assert [m["classification"] for m in result["moves"][:5]] == ["book"] * 5
@@ -224,3 +225,21 @@ def test_player_stats_count_each_game_once(tmp_path, scholars_mate_pgn):
             store.set_done(job_id, result)
         games = client.get("/api/players/alice/stats").json()["games"]
     assert [(g["id"], g["acpl"]) for g in games] == [("new", 10)]
+
+
+def test_puzzles_from_critical_moments(tmp_path):
+    pgn = '[White "alice"]\n[Black "bob"]\n[Date "2026.10.01"]\n\n' + CRITICAL_PGN
+    with make_client(tmp_path, evals=CRITICAL_EVALS) as client:
+        job = wait_for(
+            client, client.post("/api/analyses", json={"pgn": pgn}).json()["id"]
+        )
+        stats = client.get("/api/players/bob/stats").json()
+
+    nc6 = job["result"]["moves"][3]
+    assert (nc6["critical"], nc6["second_san"], nc6["second_eval"]) == (True, "d6", 330)
+    assert stats["critical"] == {"total": 2, "found": 1}
+    assert [(p["label"], p["found"]) for p in stats["puzzles"]] == [
+        ("2...Nc6", True),
+        ("3...Bc5", False),
+    ]
+    assert stats["puzzles"][0]["id"] == job["id"]
