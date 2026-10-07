@@ -243,3 +243,51 @@ def test_puzzles_from_critical_moments(tmp_path):
         ("3...Bc5", False),
     ]
     assert stats["puzzles"][0]["id"] == job["id"]
+
+
+def test_peer_comparison(tmp_path, scholars_mate_pgn):
+    def game(white, black, url):
+        return {
+            "url": url,
+            "pgn": scholars_mate_pgn,
+            "time_control": "600",
+            "time_class": "rapid",
+            "rules": "chess",
+            "end_time": 1790000000,
+            "white": {"username": white[0], "rating": white[1], "result": "win"},
+            "black": {"username": black[0], "rating": black[1], "result": "resigned"},
+        }
+
+    chesscom = MagicMock()
+    chesscom.get_recent_games.return_value = [
+        game(("zed", 1480), ("Alice", 1500), "https://www.chess.com/game/live/9")
+    ]
+    # Alice's own game against bob is the one in the PGN, with this link.
+    chesscom.get_monthly_games.return_value = [
+        game(("Alice", 1500), ("bob", 1450), "https://www.chess.com/game/live/1")
+    ]
+    with make_client(tmp_path, chesscom=chesscom) as client:
+        before = client.get("/api/players/zed/peers").json()
+        found = client.post("/api/players/zed/peers").json()
+        job_id = client.post(
+            "/api/analyses", json={"pgn": found["to_analyse"][0]["pgn"]}
+        ).json()["id"]
+        wait_for(client, job_id)
+        after = client.get("/api/players/zed/peers?time_control=600").json()
+        higher = client.get("/api/players/zed/peers?offset=200").json()
+
+    assert before["sample"] is None
+    assert (before["time_control"], before["rating"]) == ("600", 1480)
+    assert before["time_controls"][0]["games"] == 1
+    assert chesscom.get_monthly_games.call_args_list[0].args == ("Alice", 2026, 9)
+    assert found["sample"]["games"] == 1
+    assert found["sample"]["sides"] == 2
+    assert found["sample"]["analysed_sides"] == 0
+    assert (found["sample"]["target"], found["sample"]["window"]) == (1480, 100)
+    assert found["you"] == {"games": 1, "analysed": 0}
+    assert after["sample"]["analysed_sides"] == 2
+    assert after["to_analyse"] == []
+    blunders = next(m for m in after["metrics"] if m["key"] == "blunders")
+    assert blunders["peers"]["n"] > 0 and blunders["you"] is None
+    # Samples of stronger players are kept apart.
+    assert higher["sample"] is None

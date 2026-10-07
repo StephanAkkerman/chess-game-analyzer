@@ -25,6 +25,17 @@ from pydantic import BaseModel, Field
 from chess_analyzer import __version__
 from chess_analyzer.engine import find_engine
 from chess_analyzer.fetch import ChessComClient
+from chess_analyzer.peers import (
+    RATING_WINDOW,
+    collect_peer_games,
+    compare,
+    current_rating,
+    engine_profile,
+    own_profiles,
+    peer_insights,
+    summarise,
+    time_controls,
+)
 from chess_analyzer.stats import game_record, player_stats
 from chess_analyzer.web.device import InvalidEvaluation, find_device_engine
 from chess_analyzer.web.service import (
@@ -49,6 +60,10 @@ DRAW_RESULTS = {
     "timevsinsufficient",
 }
 GAMES_CACHE_SECONDS = 120
+# Months of the player's own games to compare with their peers, and the most
+# unanalysed peer games to offer for analysis at once.
+PEER_MONTHS = 3
+PEER_BATCH = 10
 # Older Pythons do not know WebAssembly, which browsers need to stream it.
 mimetypes.add_type("application/wasm", ".wasm")
 
@@ -132,6 +147,9 @@ def create_app(
     )
     games_cache: dict[tuple[str, int], tuple[float, list[dict]]] = {}
     cache_lock = threading.Lock()
+    # One peer search at a time: Chess.com asks clients not to send requests
+    # in parallel.
+    peers_lock = threading.Lock()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -217,35 +235,138 @@ def create_app(
     def check_access() -> dict:
         return {"ok": True}
 
+    def recent_games(username: str, months: int) -> list[dict]:
+        key = (username.lower(), months)
+        with cache_lock:
+            cached = games_cache.get(key)
+        if cached and time.monotonic() - cached[0] < GAMES_CACHE_SECONDS:
+            return cached[1]
+        try:
+            games = chesscom.get_recent_games(username, months=months)
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else 0
+            if status == 404:
+                raise HTTPException(404, f"Chess.com player '{username}' not found.")
+            raise HTTPException(502, "Chess.com did not respond correctly.")
+        except requests.RequestException:
+            raise HTTPException(502, "Could not reach Chess.com.")
+        with cache_lock:
+            games_cache[key] = (time.monotonic(), games)
+        return games
+
     @app.get("/api/players/{username}/games", dependencies=[Depends(require_access)])
     def player_games(
         username: str,
         months: int = Query(1, ge=1, le=12),
         limit: int = Query(30, ge=1, le=100),
     ) -> dict:
-        key = (username.lower(), months)
-        with cache_lock:
-            cached = games_cache.get(key)
-        if cached and time.monotonic() - cached[0] < GAMES_CACHE_SECONDS:
-            games = cached[1]
-        else:
-            try:
-                games = chesscom.get_recent_games(username, months=months)
-            except requests.HTTPError as exc:
-                status = exc.response.status_code if exc.response is not None else 0
-                if status == 404:
-                    raise HTTPException(
-                        404, f"Chess.com player '{username}' not found."
-                    )
-                raise HTTPException(502, "Chess.com did not respond correctly.")
-            except requests.RequestException:
-                raise HTTPException(502, "Could not reach Chess.com.")
-            with cache_lock:
-                games_cache[key] = (time.monotonic(), games)
+        games = recent_games(username, months)
         return {
             "username": username,
             "games": [game_summary(g, username) for g in games[:limit]],
         }
+
+    def peer_report(
+        username: str, time_control: str | None, offset: int, collect: bool
+    ) -> dict:
+        games = recent_games(username, PEER_MONTHS)
+        controls = time_controls(games)
+        if time_control is None:
+            if not controls:
+                raise HTTPException(404, "No recent games to compare.")
+            time_control = controls[0]["time_control"]
+        rating = current_rating(games, username, time_control)
+        if collect:
+            if rating is None:
+                raise HTTPException(422, "No recent games of this time control.")
+            target = rating + offset
+            with peers_lock:
+                peer_games = collect_peer_games(
+                    chesscom, username, games, time_control, target
+                )
+            app.state.store.save_peer_sample(
+                username,
+                time_control,
+                offset,
+                {
+                    "rating": rating,
+                    "target": target,
+                    "window": RATING_WINDOW,
+                    "games": peer_games,
+                },
+            )
+        sample = app.state.store.peer_sample(username, time_control, offset)
+
+        name = username.lower()
+        own_engine = []
+        for _, result in app.state.store.results_for_player(username):
+            headers = result.get("headers", {})
+            if headers.get("TimeControl") != time_control:
+                continue
+            color = "white" if headers.get("White", "").lower() == name else "black"
+            own_engine.append(engine_profile(result, color))
+        own = own_profiles(games, username, time_control)
+        you = summarise(own, own_engine)
+
+        peer_games = sample["games"] if sample else []
+        analysed = app.state.store.results_for_links([g["url"] for g in peer_games])
+        profiles, engine, to_analyse = [], [], []
+        for game in peer_games:
+            profiles.extend(game["sides"].values())
+            if game["url"] in analysed:
+                result = analysed[game["url"]][1]
+                engine.extend(engine_profile(result, c) for c in game["sides"])
+            else:
+                to_analyse.append(game)
+        # Games where both players are peers count twice.
+        to_analyse.sort(key=lambda g: -len(g["sides"]))
+        rows = compare(you, summarise(profiles, engine))
+        report = {
+            "username": username,
+            "time_control": time_control,
+            "time_controls": controls,
+            "offset": offset,
+            "rating": rating,
+            "you": {"games": len(own), "analysed": len(own_engine)},
+            "metrics": rows,
+            "sample": None,
+            "insights": [],
+            "to_analyse": [],
+        }
+        if sample:
+            report["sample"] = {
+                "rating": sample["rating"],
+                "target": sample["target"],
+                "window": sample["window"],
+                "created_at": sample["created_at"],
+                "games": len(peer_games),
+                "sides": len(profiles),
+                "analysed_games": len(peer_games) - len(to_analyse),
+                "analysed_sides": len(engine),
+            }
+            report["insights"] = peer_insights(rows, sample["target"], rating)
+            report["to_analyse"] = [
+                {"url": g["url"], "pgn": g["pgn"]} for g in to_analyse[:PEER_BATCH]
+            ]
+        return report
+
+    @app.get("/api/players/{username}/peers", dependencies=[Depends(require_access)])
+    def player_peers(
+        username: str,
+        time_control: str | None = Query(None, max_length=20),
+        offset: int = Query(0, ge=-500, le=500),
+    ) -> dict:
+        """The player compared with the peer games found earlier."""
+        return peer_report(username, time_control, offset, collect=False)
+
+    @app.post("/api/players/{username}/peers", dependencies=[Depends(require_access)])
+    def find_peers(
+        username: str,
+        time_control: str | None = Query(None, max_length=20),
+        offset: int = Query(0, ge=-500, le=500),
+    ) -> dict:
+        """Look for games of players at the player's rating on Chess.com."""
+        return peer_report(username, time_control, offset, collect=True)
 
     @app.get("/api/players/{username}/stats", dependencies=[Depends(require_access)])
     def player_statistics(username: str) -> dict:

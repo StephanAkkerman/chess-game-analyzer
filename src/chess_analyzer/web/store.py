@@ -24,6 +24,14 @@ CREATE TABLE IF NOT EXISTS analyses (
     updated_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS analyses_key ON analyses (key);
+CREATE TABLE IF NOT EXISTS peer_samples (
+    username TEXT NOT NULL,
+    time_control TEXT NOT NULL,
+    rating_offset INTEGER NOT NULL,
+    sample TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (username, time_control, rating_offset)
+);
 """
 
 QUEUED, RUNNING, DONE, FAILED = "queued", "running", "done", "failed"
@@ -149,6 +157,54 @@ class Store:
                 seen.add(game)
                 results.append((row["id"], result))
         return results[::-1]
+
+    def results_for_links(self, links: list[str]) -> dict[str, tuple[str, dict]]:
+        """Return the newest finished analysis of each game, by its ``Link``."""
+        found: dict[str, tuple[str, dict]] = {}
+        links = list(dict.fromkeys(links))
+        for start in range(0, len(links), 500):
+            chunk = links[start : start + 500]
+            marks = ", ".join("?" * len(chunk))
+            with self._lock:
+                rows = self._db.execute(
+                    "SELECT id, result, json_extract(result, '$.headers.Link')"
+                    " AS link FROM analyses WHERE status = ? AND"
+                    f" json_extract(result, '$.headers.Link') IN ({marks})"
+                    " ORDER BY created_at",
+                    (DONE, *chunk),
+                ).fetchall()
+            for row in rows:
+                found[row["link"]] = (row["id"], json.loads(row["result"]))
+        return found
+
+    def save_peer_sample(
+        self, username: str, time_control: str, offset: int, sample: dict
+    ) -> None:
+        """Keep the peer games found for a player, replacing earlier ones."""
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT OR REPLACE INTO peer_samples (username, time_control,"
+                " rating_offset, sample, created_at) VALUES (?, ?, ?, ?, ?)",
+                (
+                    username.lower(),
+                    time_control,
+                    offset,
+                    json.dumps(sample),
+                    time.time(),
+                ),
+            )
+
+    def peer_sample(self, username: str, time_control: str, offset: int) -> dict | None:
+        """Return the saved peer sample, with its ``created_at`` time."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT sample, created_at FROM peer_samples WHERE username = ?"
+                " AND time_control = ? AND rating_offset = ?",
+                (username.lower(), time_control, offset),
+            ).fetchone()
+        if row is None:
+            return None
+        return {**json.loads(row["sample"]), "created_at": row["created_at"]}
 
     def pending_ids(self) -> list[str]:
         """Return queued and running jobs, oldest first."""
