@@ -238,8 +238,56 @@ def test_puzzles_from_critical_moments(tmp_path):
     nc6 = job["result"]["moves"][3]
     assert (nc6["critical"], nc6["second_san"], nc6["second_eval"]) == (True, "d6", 330)
     assert stats["critical"] == {"total": 2, "found": 1}
-    assert [(p["label"], p["found"]) for p in stats["puzzles"]] == [
-        ("2...Nc6", True),
-        ("3...Bc5", False),
+    # Only the move bob missed is a puzzle: the one he found is not.
+    assert [(p["label"], p["kind"]) for p in stats["puzzles"]] == [
+        ("3...Bc5", "critical")
     ]
     assert stats["puzzles"][0]["id"] == job["id"]
+    assert stats["puzzles"][0]["line"] == ["g8f6"]
+
+
+def test_puzzle_trainer(tmp_path):
+    pgn = '[White "alice"]\n[Black "bob"]\n[Date "2026.10.01"]\n\n' + CRITICAL_PGN
+    with make_client(tmp_path, evals=CRITICAL_EVALS) as client:
+        job = wait_for(
+            client, client.post("/api/analyses", json={"pgn": pgn}).json()["id"]
+        )
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+        url = f"/api/players/bob/puzzles?today={today}"
+        day = client.get(url).json()
+        assert (day["due"], day["new"], day["total"]) == (0, 1, 1)
+        [puzzle] = day["puzzles"]
+        assert (puzzle["id"], puzzle["ply"], puzzle["kind"]) == (
+            job["id"],
+            6,
+            "critical",
+        )
+        assert puzzle["solution"][0]["san"] == "Nf6"
+        assert puzzle["review"] is None
+        assert client.get(url + "&summary=true").json()["puzzles"] == []
+
+        # Failed today: due tomorrow, so nothing more today.
+        response = client.post(
+            f"/api/players/bob/puzzles/{puzzle['key']}/review",
+            json={"solved": False, "today": today},
+        )
+        assert response.json()["step"] == 0
+        day = client.get(url).json()
+        assert (day["due"], day["new"], day["done_today"], day["tomorrow"]) == (
+            0,
+            0,
+            1,
+            1,
+        )
+        assert (
+            client.post(
+                "/api/players/bob/puzzles/nope/review", json={"solved": True}
+            ).status_code
+            == 404
+        )
+
+        single = client.get(f"/api/analyses/{job['id']}/puzzles/6").json()
+        assert single["key"] == puzzle["key"]
+        assert client.get(f"/api/analyses/{job['id']}/puzzles/1").status_code == 200
+        assert client.get(f"/api/analyses/{job['id']}/puzzles/99").status_code == 404
+        assert client.get("/api/analyses/nope/puzzles/1").status_code == 404

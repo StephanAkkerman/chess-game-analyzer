@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import logging
 import mimetypes
+import re
 import secrets
 import threading
 import time
 from contextlib import asynccontextmanager
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Annotated
 
 import chess
 import chess.svg
@@ -25,6 +28,7 @@ from pydantic import BaseModel, Field
 from chess_analyzer import __version__
 from chess_analyzer.engine import find_engine
 from chess_analyzer.fetch import ChessComClient
+from chess_analyzer.puzzles import build_puzzle, daily_set, review
 from chess_analyzer.stats import game_record, player_stats
 from chess_analyzer.web.device import InvalidEvaluation, find_device_engine
 from chess_analyzer.web.service import (
@@ -49,6 +53,8 @@ DRAW_RESULTS = {
     "timevsinsufficient",
 }
 GAMES_CACHE_SECONDS = 120
+DATE_PATTERN = r"^\d{4}-\d{2}-\d{2}$"
+PUZZLE_KEY = re.compile(r"^[0-9a-f]{16}$")
 # Older Pythons do not know WebAssembly, which browsers need to stream it.
 mimetypes.add_type("application/wasm", ".wasm")
 
@@ -64,12 +70,22 @@ class DeviceEvaluation(BaseModel):
     best: str = Field(max_length=5)
     cp: int | None = None
     mate: int | None = None
+    # The engine's line, starting with the best move.
+    pv: list[Annotated[str, Field(max_length=5)]] = Field(
+        default_factory=list, max_length=40
+    )
 
 
 class EvaluationsRequest(BaseModel):
     evaluations: list[DeviceEvaluation] = Field(max_length=1000)
     # The engine's UCI name, e.g. "Stockfish 19 Lite WASM".
     engine: str | None = Field(None, max_length=80)
+
+
+class PuzzleReview(BaseModel):
+    solved: bool
+    # The user's own date, so "tomorrow" follows their day, not the server's.
+    today: str | None = Field(None, pattern=DATE_PATTERN)
 
 
 class EngineFiles(StaticFiles):
@@ -110,6 +126,16 @@ def game_summary(raw: dict, username: str) -> dict:
         "result": outcome,
         "pgn": raw.get("pgn", ""),
     }
+
+
+def puzzle_day(today: str | None) -> date:
+    """The user's date, if given and plausible, else the date in UTC."""
+    utc = datetime.now(timezone.utc).date()
+    try:
+        day = date.fromisoformat(today) if today else utc
+    except ValueError:
+        return utc
+    return day if abs(day - utc) <= timedelta(days=1) else utc
 
 
 def create_app(
@@ -257,6 +283,63 @@ def create_app(
         ]
         return {"username": username, **player_stats(records)}
 
+    @app.get("/api/players/{username}/puzzles", dependencies=[Depends(require_access)])
+    def player_puzzles(
+        username: str,
+        today: str | None = Query(None, pattern=DATE_PATTERN),
+        summary: bool = False,
+    ) -> dict:
+        """Today's puzzles from the moves the player missed.
+
+        Those due for review come first, then new ones; see
+        :func:`chess_analyzer.puzzles.daily_set`. With ``summary``, only the
+        counts.
+        """
+        day = puzzle_day(today)
+        results = dict(app.state.store.results_for_player(username))
+        records = sorted(
+            (
+                record
+                for job_id, result in results.items()
+                if (record := game_record(result, username, job_id))
+            ),
+            key=lambda r: (r["date"], r["utc_time"]),
+            reverse=True,
+        )
+        found = [{**p, "id": r["id"]} for r in records for p in r["puzzles"]]
+        reviews = app.state.store.puzzle_reviews(username)
+        chosen = daily_set(found, reviews, day)
+        puzzles = []
+        if not summary:
+            for p in chosen["due"] + chosen["new"]:
+                if puzzle := build_puzzle(results[p["id"]], p["ply"], p["id"]):
+                    puzzles.append({**puzzle, "review": reviews.get(p["key"])})
+        return {
+            "username": username,
+            "today": day.isoformat(),
+            **chosen,
+            "due": len(chosen["due"]),
+            "new": len(chosen["new"]),
+            "puzzles": puzzles,
+        }
+
+    @app.post(
+        "/api/players/{username}/puzzles/{key}/review",
+        dependencies=[Depends(require_access)],
+    )
+    def review_puzzle(username: str, key: str, request: PuzzleReview) -> dict:
+        """Record an attempt at a puzzle and schedule its next review."""
+        if not PUZZLE_KEY.match(key):
+            raise HTTPException(404, "Unknown puzzle.")
+        store = app.state.store
+        data = review(
+            store.puzzle_reviews(username).get(key),
+            request.solved,
+            puzzle_day(request.today),
+        )
+        store.save_puzzle_review(username, key, data)
+        return data
+
     @app.post("/api/analyses", status_code=202, dependencies=[Depends(require_access)])
     def create_analysis(request: AnalysisRequest) -> dict:
         device = request.engine == "device"
@@ -293,6 +376,17 @@ def create_app(
         if job is None:
             raise HTTPException(404, "Analysis not found.")
         return job_to_dict(job)
+
+    @app.get("/api/analyses/{job_id}/puzzles/{ply}")
+    def analysis_puzzle(job_id: str, ply: int) -> dict:
+        """The puzzle before move ``ply`` of a finished analysis."""
+        job = app.state.store.get(job_id)
+        if job is None or job.status != DONE:
+            raise HTTPException(404, "Analysis not found.")
+        puzzle = build_puzzle(job.result, ply, job_id)
+        if puzzle is None:
+            raise HTTPException(404, "There is no puzzle at that move.")
+        return puzzle
 
     @app.get("/api/pieces/{name}.svg")
     def piece(name: str) -> Response:

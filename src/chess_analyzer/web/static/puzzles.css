@@ -1,0 +1,45 @@
+/* Puzzle trainer (puzzles.js). Builds on the board styles in app.css. */
+
+.puzzle-board { touch-action: none; cursor: pointer; }
+.puzzle-board.frozen { box-shadow: 0 0 0 3px var(--focus); }
+.puzzle-board .sq.selected::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(61, 124, 207, 0.45);
+}
+.puzzle-board .sq.wrong::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(208, 59, 59, 0.5);
+}
+.puzzle-board .target {
+  position: absolute;
+  inset: 36%;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.22);
+  pointer-events: none;
+  z-index: 1;
+}
+.puzzle-board .target.capture {
+  inset: 4%;
+  background: none;
+  border: 4px solid rgba(0, 0, 0, 0.22);
+}
+
+.puzzle-controls { grid-template-columns: 1fr 1fr; }
+
+.puzzle-info .message { font-weight: 600; }
+.puzzle-info .message.good { color: var(--good); }
+.puzzle-info .message.bad { color: var(--critical); }
+.puzzle-info .message.warn { color: var(--serious); }
+.puzzle-info .message.muted { color: var(--muted); font-weight: 400; }
+.puzzle-info .actions a.button { text-decoration: none; }
+
+.puzzle-side .options { margin-top: 12px; }
+.toggle { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
+.toggle input { margin-top: 3px; width: 18px; height: 18px; flex: none; }
+.block { display: block; }
+
+.trainer-card .row { margin-top: 6px; }
