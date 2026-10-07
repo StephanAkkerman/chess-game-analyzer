@@ -107,6 +107,35 @@ def wins_material(board: chess.Board, capture: chess.Move) -> bool:
     return not board.is_attacked_by(victim.color, capture.to_square)
 
 
+def material_offered(board: chess.Board, move: chess.Move) -> int:
+    """Return how much material ``move`` gives up, in pawns.
+
+    That is the most the opponent can win by taking one of the mover's pieces
+    straight after the move, less what the move itself captured. Taking a
+    defended piece costs the opponent the capturing piece in return. Deeper
+    exchanges are not looked at.
+    """
+    gained = 0
+    if board.is_en_passant(move):
+        gained = PIECE_VALUES[chess.PAWN]
+    elif (captured := board.piece_at(move.to_square)) is not None:
+        gained = PIECE_VALUES[captured.piece_type]
+    mover = board.turn
+    position = board.copy(stack=False)
+    position.push(move)
+    offered = 0
+    for reply in position.legal_moves:
+        victim = position.piece_at(reply.to_square)
+        if victim is None or victim.color != mover:
+            continue
+        value = PIECE_VALUES[victim.piece_type]
+        if position.is_attacked_by(mover, reply.to_square):
+            attacker = position.piece_at(reply.from_square)
+            value -= PIECE_VALUES[attacker.piece_type] if attacker else 0
+        offered = max(offered, value)
+    return offered - gained
+
+
 def is_forcing(board: chess.Board, move: chess.Move) -> bool:
     return board.is_capture(move) or board.gives_check(move)
 
@@ -253,9 +282,9 @@ def time_flag(
 ) -> str:
     """Flag a move whose timing points to a time-management problem.
 
-    - ``time_trouble``: a mistake or blunder with less than 10% of the
+    - ``time_trouble``: a mistake, miss or blunder with less than 10% of the
       starting clock left;
-    - ``impulsive``: any other mistake or blunder played in under 3 seconds;
+    - ``impulsive``: any other mistake, miss or blunder played in under 3 seconds;
     - ``wasted_time``: a long think (10% of the starting clock, at most two
       minutes) on an obvious move that was played correctly.
 
@@ -263,7 +292,7 @@ def time_flag(
     """
     if time is None or not base:
         return ""
-    if classification in ("mistake", "blunder"):
+    if classification in ("mistake", "miss", "blunder"):
         if time.clock_before < TIME_TROUBLE_SHARE * base:
             return TIME_TROUBLE
         if time.spent < IMPULSIVE_SECONDS:
@@ -272,7 +301,7 @@ def time_flag(
     threshold = min(WASTED_TIME_SECONDS, WASTED_TIME_SHARE * base)
     if (
         obvious
-        and classification in ("forced", "best", "good")
+        and classification in ("forced", "brilliant", "great", "best", "good")
         and (time.spent >= threshold)
     ):
         return WASTED_TIME

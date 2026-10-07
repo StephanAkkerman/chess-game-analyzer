@@ -284,7 +284,8 @@ def test_critical_moments():
     critical = [m.label for m in analysis.moves if m.critical]
     assert critical == ["2...Nc6", "3...Bc5", "5.Nxf7"]
     nc6, bc5 = analysis.critical_moments(chess.BLACK)
-    assert (nc6.classification, nc6.second_san, nc6.second_eval) == ("best", "d6", 330)
+    # Finding the only move is a great move.
+    assert (nc6.classification, nc6.second_san, nc6.second_eval) == ("great", "d6", 330)
     assert (bc5.best_san, bc5.second_san) == ("Nf6", "Bc5")
     # Bxf7+ and Kxf7 are recaptures: excluded.
     assert not analysis.moves[10].critical
@@ -314,3 +315,44 @@ def test_critical_moments_can_be_skipped(scholars_mate_pgn):
     analysis = analyze_game(game, engine, critical=False)
     assert engine.excluded == []
     assert not any(m.critical or m.second_san for m in analysis.moves)
+
+
+def test_brilliant_sacrifice():
+    game = read_games("1. e4 e5 2. Nf3 Nc6 3. Bc4 Nf6 4. Bxf7+ Kxf7 *")[0]
+    best = ["e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "g8f6", "c4f7", "e8f7", "d2d4"]
+    analysis = analyze_game(game, FakeEngine([(30, m) for m in best]), critical=False)
+    bxf7, kxf7 = analysis.moves[6:]
+    # The bishop is given up for a pawn and White still stands well.
+    assert bxf7.classification == "brilliant"
+    # Taking it back is the best move, but no sacrifice.
+    assert kxf7.classification == "best"
+
+
+def test_brilliant_needs_a_sound_position():
+    game = read_games("1. e4 e5 2. Nf3 Nc6 3. Bc4 Nf6 4. Bxf7+ Kxf7 *")[0]
+    best = ["e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "g8f6", "c4f7", "e8f7", "d2d4"]
+    evals = [(30, m) for m in best]
+    evals[7] = (-200, "e8f7")  # the sacrifice is the best of bad options
+    analysis = analyze_game(game, FakeEngine(evals), critical=False)
+    assert analysis.moves[6].classification != "brilliant"
+
+
+def test_missed_mate_is_a_miss():
+    game = read_games("1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6 4. Qf3 d6 *")[0]
+    evals = [
+        (30, "e2e4"),
+        (30, "e7e5"),
+        (30, "f1c4"),
+        (30, "b8c6"),
+        (30, "d1h5"),
+        (-20, "g7g6"),
+        (MATE_SCORE - 1, "h5f7"),
+        # After 4.Qf3 White is still better: Qxf7# was missed, nothing lost.
+        (300, "d7d6"),
+        (300, "d2d3"),
+    ]
+    analysis = analyze_game(game, FakeEngine(evals), critical=False)
+    qf3 = analysis.moves[6]
+    assert (qf3.classification, qf3.category) == ("miss", "missed_mate")
+    assert analysis.worst_moves(chess.WHITE) == [qf3]
+    assert analysis.counts(chess.WHITE)["miss"] == 1
