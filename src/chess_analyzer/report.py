@@ -203,13 +203,18 @@ def format_player_stats(stats: dict, username: str) -> str:
             if count := stats["categories"].get(category):
                 lines.append(f"  {CATEGORY_LABELS[category]:<22} {count}")
     if stats["openings"]:
-        lines += ["", "Openings (move where you left book, on average)"]
+        lines += [
+            "",
+            "Openings (move where you left book, on average, and pawn breaks)",
+        ]
         for o in stats["openings"]:
             left = f"move {o['left_book']:g}" if o["left_book"] is not None else "-"
             lines.append(
                 f"  {o['name'][:34]:<34} {o['color']:<5}  {o['games']} games  "
                 f"left book: {left}"
             )
+            for plan in o.get("plans", []):
+                lines.append(f"    {format_plan(plan)}")
     if stats["critical"]["total"]:
         critical = stats["critical"]
         found = f"{critical['found']} of {critical['total']}"
@@ -226,6 +231,19 @@ def format_player_stats(stats: dict, username: str) -> str:
         lines += ["", "What to work on"]
         lines += [f"  - {line}" for line in stats["insights"]]
     return "\n".join(lines)
+
+
+def format_plan(plan: dict) -> str:
+    """Describe how often a pawn break was carried out, from :mod:`chess_analyzer.stats`."""
+    parts = [f"played in {plan['played'] + plan['unsound']} of {plan['games']}"]
+    if plan["unsound"]:
+        parts.append(f"{plan['unsound']} unsound")
+    if plan["missed"]:
+        parts.append(f"missed in {plan['missed']}")
+    for key, word in (("with", "with it"), ("without", "without")):
+        if plan[f"games_{key}"] and plan[f"score_{key}"] is not None:
+            parts.append(f"{plan[f'score_{key}']:.0%} score {word}")
+    return f"{plan['name']:<6} break: {', '.join(parts)}"
 
 
 def format_puzzles_pgn(puzzles: list[dict]) -> str:
