@@ -596,3 +596,10 @@ button.link.opening-name { text-align: left; text-decoration: none; color: var(-
 .plan-unsound, .plan-missed { color: var(--serious); }
 .plan-not_played { color: var(--muted); }
 .time-flag { color: var(--serious); font-weight: 600; }
+
+.peer-table td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.peer-table th.group { padding-top: 12px; color: var(--text-2); }
+.verdict { font-weight: 600; font-size: 0.8rem; white-space: nowrap; }
+.verdict.ahead { color: var(--good); }
+.verdict.behind { color: var(--serious); }
+.verdict.level { color: var(--muted); }

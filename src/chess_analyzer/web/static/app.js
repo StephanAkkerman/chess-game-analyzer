@@ -470,6 +470,7 @@ async function loadGames(username, months) {
   list.replaceChildren();
   document.getElementById("analyse-all-row").hidden = true;
   loadStats(username);
+  loadPeers(username);
   try {
     const data = await api(
       `/api/players/${encodeURIComponent(username)}/games?months=${months}&limit=40`,
@@ -525,19 +526,29 @@ async function analyseRecent(username, games) {
 }
 
 // Show how far a batch of analyses has got, and refresh the progress section
-// each time one finishes. Only the latest batch is followed.
-let batchRun = 0;
-async function followBatch(username, sent, token) {
-  const run = ++batchRun;
+// each time one finishes.
+function followBatch(username, sent, token) {
+  const ui = { box: "batch", text: "batch-status", fill: "batch-fill" };
+  return followJobs(sent, token, ui, () => loadStats(username));
+}
+
+// Follow analyses in the progress bar named by `ui` (element ids), calling
+// `onChange` each time one finishes. Only the latest batch of each bar is
+// followed.
+const followRuns = new Map();
+async function followJobs(sent, token, ui, onChange) {
+  const run = (followRuns.get(ui.box) ?? 0) + 1;
+  followRuns.set(ui.box, run);
+  const current = () => token === routeToken && run === followRuns.get(ui.box);
   // The same game sent twice is one analysis.
   const ids = [...new Set(sent)];
-  const box = document.getElementById("batch");
-  const text = document.getElementById("batch-status");
-  const fill = document.getElementById("batch-fill");
+  const box = document.getElementById(ui.box);
+  const text = document.getElementById(ui.text);
+  const fill = document.getElementById(ui.fill);
   const jobs = new Map(ids.map((id) => [id, { status: "queued", done: 0, total: 0 }]));
   const ended = (job) => job.status === "done" || job.status === "failed";
   box.hidden = !ids.length;
-  while (ids.length && token === routeToken && run === batchRun) {
+  while (ids.length && current()) {
     let changed = false;
     for (const [id, job] of jobs) {
       if (ended(job)) continue;
@@ -549,7 +560,7 @@ async function followBatch(username, sent, token) {
         /* try again on the next round */
       }
     }
-    if (token !== routeToken || run !== batchRun) return;
+    if (!current()) return;
     let progress = 0;
     let finished = 0;
     let failed = 0;
@@ -572,7 +583,7 @@ async function followBatch(username, sent, token) {
       finished === ids.length
         ? `Done: analysed ${plural(ids.length - failed, "game")}${failed ? `, ${failed} failed` : ""}.`
         : `Analysed ${finished} of ${plural(ids.length, "game")}${failed ? ` (${failed} failed)` : ""}…`;
-    if (changed) loadStats(username);
+    if (changed) onChange();
     if (finished === ids.length) return;
     await sleep(2500);
   }
@@ -607,6 +618,191 @@ async function loadStats(username) {
     ...stats.insights.map((line) => el("li", { text: line })),
   );
   renderProgressDetails(stats);
+}
+
+// ---------------------------------------------------------------- peers
+
+const VERDICT_INFO = {
+  ahead: { text: "ahead", class: "verdict ahead" },
+  behind: { text: "behind", class: "verdict behind" },
+  level: { text: "on par", class: "verdict level" },
+};
+const PEER_GROUPS = { accuracy: "Accuracy", tactics: "Tactics", time: "Clock" };
+const PEER_BAR = { box: "peers-batch", text: "peers-batch-status", fill: "peers-batch-fill" };
+
+function formatMetric(row, side) {
+  const metric = row[side];
+  if (!metric) return "–";
+  if (row.kind === "share") return `${Math.round(metric.value * 100)}%`;
+  if (row.kind === "seconds") return formatSeconds(metric.value);
+  return String(metric.value);
+}
+
+// Compare the player with other players at their rating. `collect` looks
+// for new peer games on Chess.com first; `reload` hides the old comparison
+// while another time control or rating is loaded.
+async function loadPeers(username, collect = false, reload = false) {
+  const token = routeToken;
+  const section = document.getElementById("peers");
+  const status = document.getElementById("peers-status");
+  const tc = document.getElementById("peers-tc");
+  const offset = document.getElementById("peers-offset");
+  const find = document.getElementById("peers-find");
+  tc.onchange = () => loadPeers(username, false, true);
+  offset.onchange = () => loadPeers(username, false, true);
+  find.onclick = () => loadPeers(username, true);
+  const params = new URLSearchParams({ offset: offset.value });
+  if (tc.value) params.set("time_control", tc.value);
+  if (collect || reload) {
+    find.disabled = true;
+    document.getElementById("peers-body").hidden = true;
+    status.textContent = collect ? "Looking for players on Chess.com… This can take a minute." : "Loading…";
+  }
+  let data;
+  try {
+    data = await api(
+      `/api/players/${encodeURIComponent(username)}/peers?${params}`,
+      collect ? { method: "POST" } : {},
+    );
+  } catch (err) {
+    if (token !== routeToken) return;
+    find.disabled = false;
+    if (collect || reload) status.textContent = err.message;
+    return;
+  }
+  if (token !== routeToken) return;
+  find.disabled = false;
+  section.hidden = false;
+  renderPeers(username, data);
+}
+
+function renderPeers(username, data) {
+  const tc = document.getElementById("peers-tc");
+  tc.replaceChildren(
+    ...data.time_controls.map((c) =>
+      el("option", {
+        value: c.time_control,
+        text: `${formatTimeControl(c.time_control)} ${c.time_class || ""} · ${plural(c.games, "game")}`,
+      }),
+    ),
+  );
+  tc.value = data.time_control;
+  tc.hidden = data.time_controls.length < 2;
+
+  const sample = data.sample;
+  const status = document.getElementById("peers-status");
+  const find = document.getElementById("peers-find");
+  const body = document.getElementById("peers-body");
+  const who = Number(data.offset) ? "stronger players" : "players at your rating";
+  find.textContent = sample ? "Find new players" : "Find players";
+  if (!sample) {
+    status.textContent =
+      data.rating == null
+        ? "No recent rated games of this time control."
+        : `See how you compare with ${who} (around ${data.rating + Number(data.offset)}) in ` +
+          `${formatTimeControl(data.time_control)} games. Finding them takes no engine time.`;
+    find.hidden = data.rating == null;
+    body.hidden = true;
+    return;
+  }
+  find.hidden = false;
+  const parts = [
+    `${plural(sample.sides, "player")} rated ${sample.target - sample.window}–${sample.target + sample.window} ` +
+      `in ${plural(sample.games, "game")} found ${timeAgo(sample.created_at)}, ${sample.analysed_games} analysed.`,
+    `You: ${plural(data.you.games, "recent game")}, ${data.you.analysed} analysed.`,
+  ];
+  if (data.rating != null && Math.abs(data.rating - sample.rating) >= 50) {
+    parts.push(`Your rating has changed to ${data.rating} since: find new players to keep up.`);
+  }
+  status.textContent = parts.join(" ");
+  body.hidden = false;
+
+  const rows = [];
+  for (const [group, title] of Object.entries(PEER_GROUPS)) {
+    const metrics = data.metrics.filter((m) => m.group === group);
+    if (!metrics.length) continue;
+    const tip = group === "accuracy" ? [" ", cplTip()] : null;
+    rows.push(el("tr", {}, el("th", { colspan: 4, class: "group" }, title, tip)));
+    for (const m of metrics) {
+      const verdict = VERDICT_INFO[m.verdict];
+      rows.push(
+        el(
+          "tr",
+          {},
+          el("td", { text: m.label }),
+          el("td", { class: "num", text: formatMetric(m, "you") }),
+          el("td", { class: "num", text: formatMetric(m, "peers") }),
+          el(
+            "td",
+            {},
+            verdict
+              ? el("span", { class: verdict.class, text: verdict.text })
+              : m.better && m.you && m.peers
+                ? el("span", { class: "muted small", text: "too few games" })
+                : "",
+          ),
+        ),
+      );
+    }
+  }
+  document.getElementById("peers-table").replaceChildren(
+    el(
+      "table",
+      { class: "openings peer-table" },
+      el("thead", {}, el("tr", {}, ...["", "You", "Peers", ""].map((h) => el("th", { text: h })))),
+      el("tbody", {}, ...rows),
+    ),
+  );
+  const insights = data.insights.length
+    ? data.insights
+    : ["No clear difference with your peers yet. Analyse more games, yours and theirs, to sharpen the comparison."];
+  document.getElementById("peers-insights").replaceChildren(...insights.map((line) => el("li", { text: line })));
+
+  const note = [];
+  if (sample.analysed_sides < 20) {
+    note.push(
+      "Centipawn loss and tactics need the peer games analysed with the engine, like your own games. " +
+        "Analyse a few batches to fill them in; the clock numbers come straight from Chess.com.",
+    );
+  }
+  if (data.you.analysed < 5) {
+    note.push(`Analyse more of your own ${formatTimeControl(data.time_control)} games to compare these too.`);
+  }
+  document.getElementById("peers-analyse-note").textContent = note.join(" ");
+  const row = document.getElementById("peers-analyse-row");
+  const button = document.getElementById("peers-analyse");
+  row.hidden = !data.to_analyse.length;
+  button.textContent = `Analyse ${data.to_analyse.length} of their games`;
+  button.onclick = () => analysePeers(username, data.to_analyse);
+}
+
+async function analysePeers(username, games) {
+  const token = routeToken;
+  const button = document.getElementById("peers-analyse");
+  const note = document.getElementById("peers-analyse-note");
+  button.disabled = true;
+  const ids = [];
+  let full = false;
+  let onDevice = 0;
+  for (const game of games) {
+    try {
+      const job = await startAnalysis(game.pgn);
+      ids.push(job.id);
+      if (job.status === "device") onDevice += 1;
+    } catch (err) {
+      if (err.status === 503) {
+        full = true;
+        break;
+      }
+    }
+  }
+  if (token !== routeToken) return;
+  button.disabled = false;
+  note.textContent =
+    `Sent ${plural(ids.length, "game")} for analysis.` +
+    (full ? " The queue is full; try the rest later." : "") +
+    (onDevice ? " This device analyses them one by one: keep this page open." : "");
+  followJobs(ids, token, PEER_BAR, () => loadPeers(username));
 }
 
 // Average centipawn loss per game, oldest first. Lower is better.
