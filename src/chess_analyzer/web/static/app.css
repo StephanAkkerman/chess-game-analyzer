@@ -367,15 +367,18 @@ dialog input { width: 100%; margin: 8px 0; }
   box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.15);
 }
 
-.arrows { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 3; }
+.arrows { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 3; opacity: 0.85; }
+.arrows.engine { opacity: 0.6; }
+.board-column { scroll-margin-top: 64px; }
 
 .controls {
   display: grid;
-  grid-template-columns: repeat(4, 1fr) auto auto;
+  grid-template-columns: repeat(4, 1fr) auto auto auto;
   gap: 6px;
   margin-top: 8px;
 }
 .controls button { padding: 8px; font-size: 1.05rem; }
+.controls button[aria-pressed="true"] { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
 
 /* Classification colours: always shown with a symbol and a word. */
 .cls-book { --cls: var(--border); }
@@ -498,6 +501,22 @@ button.link {
 .alts { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 8px; }
 .alt { display: grid; grid-template-columns: 4em 1fr auto; gap: 10px; align-items: center; font-size: 0.9rem; }
 .alt .san { font-weight: 700; }
+button.alt {
+  width: 100%;
+  min-height: 36px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 400;
+  text-align: left;
+  cursor: pointer;
+}
+button.alt:hover { background: var(--surface-2); }
+.preview-move { cursor: help; text-decoration: underline dotted; text-underline-offset: 3px; }
 .bar { height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
 .bar > div { height: 100%; background: var(--accent); border-radius: 4px; }
 

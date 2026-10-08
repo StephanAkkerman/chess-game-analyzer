@@ -1257,7 +1257,13 @@ class AnalysisView {
     this.moves = result.moves;
     this.ply = 0;
     this.startPly = startPly ?? 0;
-    this.showBest = false;
+    // A move drawn as an arrow on the position it was played from, instead
+    // of the game move: `pin` stays until the user moves on, `hover` only
+    // while the pointer is over the move's name.
+    this.pin = null;
+    this.hover = null;
+    // Whether to always draw the engine's best move in the shown position.
+    this.engineArrow = store.get("engineArrow", false);
     const h = result.headers;
     const me = store.get("username", "");
     this.me = sameName(h.White, me) ? "white" : sameName(h.Black, me) ? "black" : null;
@@ -1311,7 +1317,8 @@ class AnalysisView {
 
   go(ply) {
     this.ply = Math.max(0, Math.min(this.moves.length, ply));
-    this.showBest = false;
+    this.pin = null;
+    this.hover = null;
     this.update();
   }
 
@@ -1354,9 +1361,46 @@ class AnalysisView {
     document.getElementById("evalbar").classList.toggle("flipped", this.flipped);
   }
 
+  // A preview of `uci` played from `fen`, for pinning or hovering.
+  preview(kind, fen, uci) {
+    return uci ? { kind, fen, uci } : null;
+  }
+
+  // The best move in place of the current move.
+  bestPreview(move = this.current) {
+    return move ? this.preview("best", move.fen_before, move.best_uci) : null;
+  }
+
+  get showBest() {
+    return this.pin?.kind === "best";
+  }
+
+  setHover(preview) {
+    this.hover = preview;
+    this.renderBoard();
+  }
+
+  // Hovering or focusing `node` previews the move on the board.
+  previewOn(node, preview) {
+    if (!preview) return node;
+    node.addEventListener("pointerenter", (e) => e.pointerType === "mouse" && this.setHover(preview));
+    node.addEventListener("pointerleave", () => this.hover && this.setHover(null));
+    node.addEventListener("focus", () => this.setHover(preview));
+    node.addEventListener("blur", () => this.hover && this.setHover(null));
+    return node;
+  }
+
+  // The engine's best move in the shown position, unless it is one of the
+  // user's own misses they haven't looked at yet.
+  engineMove() {
+    const next = this.moves[this.ply];
+    if (!this.engineArrow || !next?.best_uci || this.hidesBest(next)) return null;
+    return next.best_uci;
+  }
+
   renderBoard() {
-    const showBest = this.showBest && this.current?.best_uci;
-    const fen = showBest ? this.current.fen_before : this.fenAt(this.ply);
+    const shown = this.hover || this.pin;
+    const fen = shown ? shown.fen : this.fenAt(this.ply);
     const rows = fen.split(" ")[0].split("/");
     const grid = rows.map((row) => {
       const out = [];
@@ -1370,10 +1414,11 @@ class AnalysisView {
     const move = this.current;
     const highlight = new Set();
     let badgeSquare = null;
-    if (move && !showBest) {
+    if (move && !shown) {
       highlight.add(move.uci.slice(0, 2)).add(move.uci.slice(2, 4));
       badgeSquare = move.uci.slice(2, 4);
     }
+    if (shown) highlight.add(shown.uci.slice(0, 2));
 
     const squares = [];
     for (let r = 0; r < 8; r++) {
@@ -1403,7 +1448,12 @@ class AnalysisView {
         squares.push(sq);
       }
     }
-    if (showBest) squares.push(this.arrow(this.current.best_uci));
+    if (shown) {
+      squares.push(this.arrow(shown.uci));
+    } else {
+      const best = this.engineMove();
+      if (best) squares.push(this.arrow(best, "engine"));
+    }
     this.board.replaceChildren(...squares);
     this.board.setAttribute(
       "aria-label",
@@ -1411,7 +1461,7 @@ class AnalysisView {
     );
   }
 
-  arrow(uci) {
+  arrow(uci, kind = "") {
     const center = (sq) => {
       const file = "abcdefgh".indexOf(sq[0]);
       const rank = Number(sq[1]) - 1;
@@ -1423,13 +1473,13 @@ class AnalysisView {
     const [x2, y2] = center(uci.slice(2, 4));
     const len = Math.hypot(x2 - x1, y2 - y1);
     const [ux, uy] = [(x2 - x1) / len, (y2 - y1) / len];
-    const svg = svgEl("svg", { class: "arrows", viewBox: "0 0 8 8" });
+    const svg = svgEl("svg", { class: `arrows ${kind}`, viewBox: "0 0 8 8" });
     const head = 0.42;
     const [bx, by] = [x2 - ux * head, y2 - uy * head];
     svg.append(
       svgEl("line", {
         x1, y1, x2: bx, y2: by,
-        stroke: "var(--arrow)", "stroke-width": 0.17, "stroke-linecap": "round", opacity: 0.85,
+        stroke: "var(--arrow)", "stroke-width": 0.17, "stroke-linecap": "round",
       }),
       svgEl("polygon", {
         points: [
@@ -1437,7 +1487,7 @@ class AnalysisView {
           [bx - uy * 0.24, by + ux * 0.24],
           [bx + uy * 0.24, by - ux * 0.24],
         ].map((p) => p.join(",")).join(" "),
-        fill: "var(--arrow)", opacity: 0.85,
+        fill: "var(--arrow)",
       }),
     );
     return svg;
@@ -1461,6 +1511,30 @@ class AnalysisView {
       box.replaceChildren(
         el("div", { class: "headline" }, el("span", { class: "move", text: "Start" })),
         el("p", { class: "muted", text: "Use the arrows, swipe the board or tap a move." }),
+      );
+      return;
+    }
+    if (this.pin?.kind === "book") {
+      box.replaceChildren(
+        el(
+          "div",
+          { class: "headline" },
+          el("span", { class: "move", text: this.pin.label }),
+          el("span", { class: "pill cls-book", text: "Book" }),
+        ),
+        el("p", {}, `A book move instead of ${move.label}. ${this.pin.note}`),
+        el(
+          "div",
+          { class: "actions row" },
+          el("button", {
+            type: "button",
+            text: "Show the game move",
+            onclick: () => {
+              this.pin = null;
+              this.update();
+            },
+          }),
+        ),
       );
       return;
     }
@@ -1510,13 +1584,20 @@ class AnalysisView {
           ? ` This cost ${(move.cp_loss / 100).toFixed(1)} pawns.`
           : "";
       children.push(
-        el("p", {}, "Best was ", el("strong", { text: move.best_san }), ` (${formatEval(move.eval_before, move.source_before)}).${lost}`),
+        el(
+          "p",
+          {},
+          "Best was ",
+          this.previewOn(el("strong", { class: "preview-move", tabindex: "0", text: move.best_san }), this.bestPreview(move)),
+          ` (${formatEval(move.eval_before, move.source_before)}).${lost}`,
+        ),
       );
       const toggle = el("button", {
         type: "button",
         text: this.showBest ? "Show the game move" : "Show best move",
         onclick: () => {
-          this.showBest = !this.showBest;
+          this.pin = this.showBest ? null : this.bestPreview(move);
+          this.hover = null;
           this.renderBoard();
           this.renderMoveInfo();
         },
@@ -1822,16 +1903,37 @@ class AnalysisView {
         ),
       );
       if (dev.alternatives.length) {
-        children.push(el("p", { class: "muted small", text: "Book moves in that position, best first:" }));
+        const fen = this.moves[dev.ply - 1].fen_before;
+        children.push(el("p", { class: "muted small", text: "Book moves in that position, best first. Tap one to see it on the board:" }));
         children.push(
           el(
             "ul",
             { class: "alts" },
             ...dev.alternatives.map((alt) => {
               const score = alt.score;
-              return el(
-                "li",
-                { class: "alt" },
+              const preview = this.preview("book", fen, alt.uci);
+              const note =
+                score === null
+                  ? `Played in ${alt.games.toLocaleString()} book games.`
+                  : `Scores ${Math.round(score * 100)}% for ${this.sideLabel(dev.color) === "You" ? "you" : dev.color} in ${alt.games.toLocaleString()} games.`;
+              const label = `${Math.ceil(dev.ply / 2)}${dev.ply % 2 ? "." : "..."}${alt.san}`;
+              const row = el(
+                "button",
+                {
+                  type: "button",
+                  class: "alt",
+                  "aria-label": `Show ${alt.san} on the board`,
+                  onclick: () => {
+                    this.go(dev.ply);
+                    this.pin = { ...preview, label, note };
+                    this.update();
+                    // On a phone the board is out of view by now.
+                    const rect = this.board.getBoundingClientRect();
+                    if (rect.top < 0 || rect.bottom > window.innerHeight) {
+                      this.board.closest(".board-column").scrollIntoView({ block: "start", behavior: "smooth" });
+                    }
+                  },
+                },
                 el("span", { class: "san", text: alt.san }),
                 score === null
                   ? el("span", { class: "muted", text: `weight ${alt.games}` })
@@ -1842,6 +1944,7 @@ class AnalysisView {
                   score === null ? "" : `${Math.round(score * 100)}% · ${alt.games.toLocaleString()} games`,
                 ),
               );
+              return el("li", {}, this.previewOn(row, preview));
             }),
           ),
         );
@@ -1926,6 +2029,14 @@ class AnalysisView {
       this.renderBoard();
     });
     document.getElementById("share").addEventListener("click", () => this.share());
+    const engine = document.getElementById("engine-arrow");
+    engine.setAttribute("aria-pressed", String(this.engineArrow));
+    engine.addEventListener("click", () => {
+      this.engineArrow = !this.engineArrow;
+      store.set("engineArrow", this.engineArrow);
+      engine.setAttribute("aria-pressed", String(this.engineArrow));
+      this.renderBoard();
+    });
 
     const onKey = (event) => {
       if (this.token !== routeToken) {

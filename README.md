@@ -185,10 +185,10 @@ with chess.engine.SimpleEngine.popen_uci(find_engine()) as engine:
 The web app is the easiest way to use the analyzer from a phone. Choose Chess.com or Lichess, enter your username and tap a game. Stockfish analyses it, and the page shows:
 
 - the board with an evaluation bar. Step through the moves with the arrows, by swiping the board or by tapping a move;
-- each move's classification. Inaccuracies, mistakes and blunders also show the engine's best move, and "Show best move" draws it on the board. For your own mistakes, misses and blunders the best move stays hidden until you ask for it, so you can work it out first or solve it as a puzzle. Mistakes and blunders say what kind of error they were, and every move shows how long it took;
+- each move's classification. Inaccuracies, mistakes and blunders also show the engine's best move, and "Show best move" draws it on the board; hovering over the best move's name previews it. The ↗ button below the board always draws the engine's best move in the position shown, so you can follow the engine's choices through the game, except before your own misses you haven't looked at yet. For your own mistakes, misses and blunders the best move stays hidden until you ask for it, so you can work it out first or solve it as a puzzle. Mistakes and blunders say what kind of error they were, and every move shows how long it took;
 - an evaluation graph. Tap or drag on it to jump through the game;
 - both players' average centipawn loss and biggest mistakes;
-- where the game left opening theory, and how the book moves score;
+- where the game left opening theory, and how the book moves score. Hover over a book move, or tap it, to see it played on the board;
 - the critical moments, marked ◆ in the move list and on the graph. "Try it as a puzzle" opens the position before the move as a puzzle.
 
 Under **Your progress**, the games list shows statistics over all your games that have been analysed: your average centipawn loss per game over time, the loss per game phase, the kinds of mistakes you make, where you leave book in each opening, how you use your clock, and what to work on. **Puzzles from your games** says how many puzzles are due today and starts the trainer.
