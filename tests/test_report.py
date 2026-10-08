@@ -74,16 +74,21 @@ def test_critical_moments_in_reports_and_puzzles():
     record = game_record(result, "bob", "abc")
     stats = player_stats([record])
     assert stats["critical"] == {"total": 2, "found": 1}
-    puzzle = stats["puzzles"][1]
-    assert (puzzle["id"], puzzle["label"], puzzle["found"]) == ("abc", "3...Bc5", False)
+    # The found critical moment, 2...Nc6, makes no puzzle.
+    [puzzle] = stats["puzzles"]
+    assert (puzzle["id"], puzzle["label"], puzzle["kind"]) == (
+        "abc",
+        "3...Bc5",
+        "critical",
+    )
     assert puzzle["fen"] == analysis.moves[5].fen_before
-    assert "you found the only good move in 1 of 2" in format_player_stats(stats, "bob")
+    text = format_player_stats(stats, "bob")
+    assert "you found the only good move in 1 of 2" in text
+    assert "3...Bc5      critical" in text
 
     pgn = format_puzzles_pgn(stats["puzzles"])
-    puzzles = read_games(pgn)
-    assert len(puzzles) == 2
-    second = puzzles[1]
-    assert second.board().fen() == puzzle["fen"]
-    assert second.headers["Event"] == "Critical moment, move 3, Black to move"
-    assert second.next().move.uci() == "g8f6"
-    assert "3...Bc5 was played" in second.next().comment
+    [game] = read_games(pgn)
+    assert game.board().fen() == puzzle["fen"]
+    assert game.headers["Event"] == "Puzzle, move 3, Black to move"
+    assert game.next().move.uci() == "g8f6"
+    assert "3...Bc5 was played" in game.next().comment

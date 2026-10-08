@@ -88,9 +88,9 @@ export class BrowserEngine {
   }
 
   // Search one position: `search` comes from the server ({ fen, moves,
-  // searchmoves }), `limit` is { depth, movetime }. Resolves to the best move
-  // and its score from the side to move's point of view, as { best, cp } or
-  // { best, mate }.
+  // searchmoves }), `limit` is { depth, movetime }. Resolves to the best move,
+  // its score from the side to move's point of view and the engine's line,
+  // as { best, cp, pv } or { best, mate, pv }.
   async search(search, limit) {
     await this.start();
     const moves = search.moves.length ? ` moves ${search.moves.join(" ")}` : "";
@@ -102,6 +102,7 @@ export class BrowserEngine {
 
     let score = null;
     let best = null;
+    let pv = [];
     await this.waitFor(go, (line) => {
       if (line.startsWith("info ") && / pv /.test(line)) {
         const multipv = line.match(/ multipv (\d+)/);
@@ -110,6 +111,7 @@ export class BrowserEngine {
           // A bound is only kept until a real score arrives.
           if (!found[3] || !score || score.bound) {
             score = { [found[1]]: Number(found[2]), bound: Boolean(found[3]) };
+            pv = line.split(" pv ")[1].trim().split(/\s+/);
           }
         }
         return false;
@@ -120,6 +122,6 @@ export class BrowserEngine {
     });
     if (!best || best === "(none)" || !score) throw new Error("The engine found no move.");
     const { bound, ...value } = score;
-    return { best, ...value };
+    return { best, ...value, pv: pv[0] === best ? pv.slice(0, 12) : [best] };
   }
 }

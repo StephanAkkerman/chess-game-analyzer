@@ -62,6 +62,7 @@ def move_to_dict(move: MoveAnalysis) -> dict:
         "second_san": move.second_san,
         "second_eval": move.second_eval,
         "critical": move.critical,
+        "best_line": move.best_line,
     }
 
 

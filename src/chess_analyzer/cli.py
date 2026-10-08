@@ -121,7 +121,7 @@ def build_parser() -> argparse.ArgumentParser:
     engine.add_argument(
         "--puzzles",
         metavar="FILE",
-        help="Write your critical moments to FILE as PGN puzzles.",
+        help="Write the moves you missed to FILE as PGN puzzles.",
     )
 
     openings = parser.add_argument_group("openings")
