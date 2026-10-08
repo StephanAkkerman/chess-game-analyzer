@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field
 
 from chess_analyzer import __version__
 from chess_analyzer.engine import find_engine
-from chess_analyzer.fetch import ChessComClient
+from chess_analyzer.fetch import ChessComClient, LichessClient
 from chess_analyzer.peers import (
     RATING_WINDOW,
     collect_peer_games,
@@ -64,6 +64,7 @@ DRAW_RESULTS = {
     "timevsinsufficient",
 }
 GAMES_CACHE_SECONDS = 120
+SITE_NAMES = {"chess.com": "Chess.com", "lichess": "Lichess"}
 # Months of the player's own games to compare with their peers, and the most
 # unanalysed peer games to offer for analysis at once.
 PEER_MONTHS = 3
@@ -115,7 +116,11 @@ class EngineFiles(StaticFiles):
 
 
 def game_summary(raw: dict, username: str) -> dict:
-    """Describe a Chess.com game from ``username``'s point of view."""
+    """Describe a game from ``username``'s point of view.
+
+    ``raw`` is a Chess.com game object, or a Lichess game in the same shape
+    (see :func:`chess_analyzer.fetch.lichess_game`).
+    """
     white, black = raw.get("white", {}), raw.get("black", {})
     is_white = white.get("username", "").lower() == username.lower()
     me, opponent = (white, black) if is_white else (black, white)
@@ -159,19 +164,22 @@ def create_app(
     opening_factory: OpeningFactory | None = None,
     chesscom: ChessComClient | None = None,
     tablebase_factory: TablebaseFactory | None = None,
+    lichess: LichessClient | None = None,
 ) -> FastAPI:
     """Build the app.
 
-    The factories and client can be replaced, which the tests use to avoid
+    The factories and clients can be replaced, which the tests use to avoid
     running Stockfish or calling external APIs.
     """
     settings = settings or Settings.from_env()
     chesscom = chesscom or ChessComClient()
+    lichess = lichess or LichessClient(token=settings.lichess_token)
+    clients = {"chess.com": chesscom, "lichess": lichess}
     device_engine = find_device_engine(settings.browser_engine_dir)
     server_engine = engine_factory is not None or bool(
         find_engine(settings.stockfish_path)
     )
-    games_cache: dict[tuple[str, int], tuple[float, list[dict]]] = {}
+    games_cache: dict[tuple[str, str, int], tuple[float, list[dict]]] = {}
     cache_lock = threading.Lock()
     # One peer search at a time: Chess.com asks clients not to send requests
     # in parallel.
@@ -261,21 +269,26 @@ def create_app(
     def check_access() -> dict:
         return {"ok": True}
 
-    def recent_games(username: str, months: int) -> list[dict]:
-        key = (username.lower(), months)
+    def recent_games(username: str, months: int, site: str = "chess.com") -> list[dict]:
+        key = (site, username.lower(), months)
         with cache_lock:
             cached = games_cache.get(key)
         if cached and time.monotonic() - cached[0] < GAMES_CACHE_SECONDS:
             return cached[1]
+        name = SITE_NAMES[site]
         try:
-            games = chesscom.get_recent_games(username, months=months)
+            games = clients[site].get_recent_games(username, months=months)
         except requests.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else 0
             if status == 404:
-                raise HTTPException(404, f"Chess.com player '{username}' not found.")
-            raise HTTPException(502, "Chess.com did not respond correctly.")
+                raise HTTPException(404, f"{name} player '{username}' not found.")
+            if status == 429:
+                raise HTTPException(
+                    503, f"{name} asked us to slow down. Try again in a minute."
+                )
+            raise HTTPException(502, f"{name} did not respond correctly.")
         except requests.RequestException:
-            raise HTTPException(502, "Could not reach Chess.com.")
+            raise HTTPException(502, f"Could not reach {name}.")
         with cache_lock:
             games_cache[key] = (time.monotonic(), games)
         return games
@@ -285,10 +298,12 @@ def create_app(
         username: str,
         months: int = Query(1, ge=1, le=12),
         limit: int = Query(30, ge=1, le=100),
+        site: str = Query("chess.com", pattern="^(chess\\.com|lichess)$"),
     ) -> dict:
-        games = recent_games(username, months)
+        games = recent_games(username, months, site)
         return {
             "username": username,
+            "site": site,
             "games": [game_summary(g, username) for g in games[:limit]],
         }
 

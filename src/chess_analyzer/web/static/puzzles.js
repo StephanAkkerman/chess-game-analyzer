@@ -672,12 +672,18 @@ class PuzzleSession {
 
 // ---------------------------------------------------------------- pages
 
+// The player's page, on the site of the current page (#/u/NAME or #/lichess/NAME).
+function userHash(username) {
+  const site = location.hash.startsWith("#/lichess/") ? "lichess" : "u";
+  return `#/${site}/${encodeURIComponent(username)}`;
+}
+
 // Today's puzzles for `username`: those due for review, then new ones.
 export async function renderPuzzleTrainer(view, username) {
   const { el, api } = ctx;
   const token = ctx.routeToken();
   const day = localDate();
-  const back = { href: `#/u/${encodeURIComponent(username)}`, text: "Back to your games" };
+  const back = { href: userHash(username), text: "Back to your games" };
   view.replaceChildren(el("section", { class: "card" }, el("h1", { text: "Puzzles" }), el("p", { class: "muted", text: "Loading today's puzzles…" })));
   let data;
   try {
@@ -738,7 +744,7 @@ export function puzzleTrainerCard(username, critical) {
       status.replaceChildren(lines.join(" "));
       if (data.due + data.new) {
         box.append(
-          el("div", { class: "row" }, el("a", { class: "button primary", href: `#/u/${encodeURIComponent(username)}/puzzles`, text: "Start today's puzzles" })),
+          el("div", { class: "row" }, el("a", { class: "button primary", href: `${userHash(username)}/puzzles`, text: "Start today's puzzles" })),
         );
       }
     })

@@ -22,7 +22,7 @@ from chess_analyzer.engine import (
     open_engine,
     open_tablebase,
 )
-from chess_analyzer.fetch import ChessComClient
+from chess_analyzer.fetch import SITES, make_client
 from chess_analyzer.openings import (
     LichessExplorer,
     OpeningSource,
@@ -44,22 +44,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="chess-analyzer",
         description=(
-            "Download your Chess.com games and analyse them with Stockfish "
-            "and an opening book."
+            "Download your Chess.com or Lichess games and analyse them with "
+            "Stockfish and an opening book."
         ),
     )
-    parser.add_argument("username", help="Chess.com username to analyse.")
+    parser.add_argument("username", help="Chess.com or Lichess username to analyse.")
     source = parser.add_argument_group("games")
+    source.add_argument(
+        "--site",
+        choices=SITES,
+        default="chess.com",
+        help="Site to download the games from (default: chess.com).",
+    )
     source.add_argument(
         "--pgn",
         metavar="FILE",
-        help="Read games from a local PGN file instead of the Chess.com API.",
+        help="Read games from a local PGN file instead of downloading them.",
     )
     source.add_argument(
         "--months",
         type=int,
         default=1,
-        help="Number of recent monthly archives to search (default: 1).",
+        help="Search games from the last N calendar months (default: 1).",
     )
     source.add_argument(
         "--max-games",
@@ -70,7 +76,8 @@ def build_parser() -> argparse.ArgumentParser:
     source.add_argument(
         "--time-class",
         choices=["bullet", "blitz", "rapid", "daily"],
-        help="Only analyse games of this time class.",
+        help="Only analyse games of this time class. On Lichess, rapid includes "
+        "classical and daily means correspondence.",
     )
 
     engine = parser.add_argument_group("engine")
@@ -150,7 +157,7 @@ def load_games(args: argparse.Namespace) -> list[chess.pgn.Game]:
         with open(args.pgn, encoding="utf-8") as f:
             games = read_games(f.read())
     else:
-        client = ChessComClient()
+        client = make_client(args.site, lichess_token=os.environ.get("LICHESS_TOKEN"))
         raw = client.get_recent_games(
             args.username,
             months=args.months,

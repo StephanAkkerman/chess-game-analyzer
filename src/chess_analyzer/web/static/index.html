@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="description" content="Analyse your Chess.com games with Stockfish and opening theory.">
+  <meta name="description" content="Analyse your Chess.com and Lichess games with Stockfish and opening theory.">
   <meta name="theme-color" content="#f6f5f1" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#1b1a18" media="(prefers-color-scheme: dark)">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -42,8 +42,12 @@
     <section class="card">
       <h1>Analyse your games</h1>
       <form id="user-form" class="stack">
-        <label for="username">Chess.com username</label>
+        <label for="username">Username</label>
         <div class="row">
+          <select id="site" aria-label="Site">
+            <option value="chess.com">Chess.com</option>
+            <option value="lichess">Lichess</option>
+          </select>
           <input id="username" name="username" autocomplete="username" autocapitalize="off"
                  spellcheck="false" placeholder="e.g. hikaru" required>
           <button type="submit" class="primary">Show games</button>

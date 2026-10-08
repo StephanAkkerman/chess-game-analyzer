@@ -1,7 +1,7 @@
 {
   "name": "Chess Analyzer",
   "short_name": "Chess",
-  "description": "Analyse your Chess.com games with Stockfish and opening theory.",
+  "description": "Analyse your Chess.com and Lichess games with Stockfish and opening theory.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
