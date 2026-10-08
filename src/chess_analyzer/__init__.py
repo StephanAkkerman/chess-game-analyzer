@@ -1,3 +1,3 @@
-"""Fetch Chess.com games and analyse them with Stockfish and opening books."""
+"""Fetch Chess.com and Lichess games and analyse them with Stockfish."""
 
 __version__ = "0.1.0"

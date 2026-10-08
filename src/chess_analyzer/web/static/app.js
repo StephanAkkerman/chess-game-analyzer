@@ -355,13 +355,22 @@ function rememberAnalysis(id, result) {
 
 // ---------------------------------------------------------------- home
 
-function renderHome(initialUser) {
+const SITE_NAMES = { "chess.com": "Chess.com", lichess: "Lichess" };
+
+// The page of a player's games: #/u/NAME on Chess.com, #/lichess/NAME on Lichess.
+function userHash(name, site) {
+  return `#/${site === "lichess" ? "lichess" : "u"}/${encodeURIComponent(name)}`;
+}
+
+function renderHome(initialUser, initialSite) {
   view.replaceChildren(document.getElementById("home-template").content.cloneNode(true));
   const form = document.getElementById("user-form");
   const input = document.getElementById("username");
+  const site = document.getElementById("site");
   const months = document.getElementById("months");
   const user = initialUser || store.get("username", "");
   input.value = user;
+  site.value = initialSite || store.get("site", "chess.com");
   months.value = String(store.get("months", 1));
 
   form.addEventListener("submit", (event) => {
@@ -369,16 +378,17 @@ function renderHome(initialUser) {
     const name = input.value.trim();
     if (!name) return;
     store.set("username", name);
+    store.set("site", site.value);
     store.set("months", Number(months.value));
-    if (location.hash !== `#/u/${encodeURIComponent(name)}`) {
-      location.hash = `#/u/${encodeURIComponent(name)}`;
+    if (location.hash !== userHash(name, site.value)) {
+      location.hash = userHash(name, site.value);
     } else {
-      loadGames(name, Number(months.value));
+      loadGames(name, Number(months.value), site.value);
     }
   });
   months.addEventListener("change", () => {
     store.set("months", Number(months.value));
-    if (input.value.trim()) loadGames(input.value.trim(), Number(months.value));
+    if (input.value.trim()) loadGames(input.value.trim(), Number(months.value), site.value);
   });
 
   const pgnForm = document.getElementById("pgn-form");
@@ -402,7 +412,7 @@ function renderHome(initialUser) {
   renderRecent();
   getConfig().then(renderEngineInfo);
 
-  if (initialUser) loadGames(initialUser, Number(months.value));
+  if (initialUser) loadGames(initialUser, Number(months.value), site.value);
 }
 
 // The engine used, and a choice between this device and the server when
@@ -459,22 +469,23 @@ function renderRecent() {
   );
 }
 
-async function loadGames(username, months) {
+async function loadGames(username, months, site = "chess.com") {
   const token = routeToken;
   const section = document.getElementById("games");
   const status = document.getElementById("games-status");
   const list = document.getElementById("game-list");
   section.hidden = false;
   document.getElementById("games-title").textContent = `Recent games of ${username}`;
-  status.textContent = "Loading games from Chess.com…";
+  status.textContent = `Loading games from ${SITE_NAMES[site]}…`;
   list.replaceChildren();
   document.getElementById("analyse-all-row").hidden = true;
   loadStats(username);
-  loadPeers(username);
+  // Peers are only looked for on Chess.com.
+  if (site === "chess.com") loadPeers(username);
+  else document.getElementById("peers").hidden = true;
   try {
-    const data = await api(
-      `/api/players/${encodeURIComponent(username)}/games?months=${months}&limit=40`,
-    );
+    const params = new URLSearchParams({ months, limit: 40, site });
+    const data = await api(`/api/players/${encodeURIComponent(username)}/games?${params}`);
     if (token !== routeToken) return;
     status.textContent = data.games.length
       ? "Tap a game to analyse it."
@@ -1952,7 +1963,8 @@ class AnalysisView {
       );
     }
     if (h.Link && /^https:\/\//.test(h.Link)) {
-      meta.append(el("br"), el("a", { href: h.Link, target: "_blank", rel: "noopener", text: "View on Chess.com" }));
+      const site = /^https:\/\/lichess\.org\//.test(h.Link) ? "Lichess" : "Chess.com";
+      meta.append(el("br"), el("a", { href: h.Link, target: "_blank", rel: "noopener", text: `View on ${site}` }));
     }
   }
 
@@ -2045,13 +2057,14 @@ function route() {
   routeToken += 1;
   const hash = location.hash.replace(/^#/, "");
   const analysis = hash.match(/^\/a\/([\w-]+)(?:\/([pm])\/(\d+))?$/);
-  const user = hash.match(/^\/u\/([^/]+)$/);
+  const user = hash.match(/^\/(u|lichess)\/([^/]+)$/);
   window.scrollTo(0, 0);
   if (analysis) {
     const ply = analysis[3] ? Number(analysis[3]) : null;
     renderAnalysis(analysis[1], analysis[2] === "p" ? ply : null, analysis[2] === "m" ? ply : null);
   }
-  else renderHome(user ? decodeURIComponent(user[1]) : null);
+  else if (user) renderHome(decodeURIComponent(user[2]), user[1] === "lichess" ? "lichess" : "chess.com");
+  else renderHome(null);
 }
 
 window.addEventListener("hashchange", route);

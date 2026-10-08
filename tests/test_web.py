@@ -31,12 +31,15 @@ def wait_for(client, job_id, timeout=10):
     raise AssertionError("analysis did not finish")
 
 
-def make_client(tmp_path, opening=None, chesscom=None, evals=EVALS, **settings):
+def make_client(
+    tmp_path, opening=None, chesscom=None, evals=EVALS, lichess=None, **settings
+):
     app = create_app(
         Settings(data_dir=tmp_path, **settings),
         engine_factory=lambda: QuittableEngine(evals),
         opening_factory=lambda: opening,
         chesscom=chesscom or MagicMock(),
+        lichess=lichess or MagicMock(),
     )
     return TestClient(app)
 
@@ -175,6 +178,20 @@ def test_player_games_are_cached(tmp_path):
         client.get("/api/players/alice/games")
     assert data["games"][0]["opponent"]["username"] == "bob"
     chesscom.get_recent_games.assert_called_once_with("Alice", months=1)
+
+
+def test_player_games_from_lichess(tmp_path):
+    chesscom, lichess = MagicMock(), MagicMock()
+    lichess.get_recent_games.return_value = [
+        chesscom_game("Alice", "bob", "win", "resigned")
+    ]
+    with make_client(tmp_path, chesscom=chesscom, lichess=lichess) as client:
+        data = client.get("/api/players/Alice/games?site=lichess&months=3").json()
+        assert client.get("/api/players/Alice/games?site=fics").status_code == 422
+    assert data["site"] == "lichess"
+    assert data["games"][0]["result"] == "win"
+    lichess.get_recent_games.assert_called_once_with("Alice", months=3)
+    chesscom.get_recent_games.assert_not_called()
 
 
 def test_unknown_player_is_404(tmp_path):

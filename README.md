@@ -9,7 +9,7 @@
 
 ## Introduction
 
-Chess Game Analyzer downloads your recent games from Chess.com, runs Stockfish over every move and checks the opening against established theory. Use it from your phone through the web app, or from the command line. For each game it reports:
+Chess Game Analyzer downloads your recent games from Chess.com or Lichess, runs Stockfish over every move and checks the opening against established theory. Use it from your phone through the web app, or from the command line. For each game it reports:
 
 - your average centipawn loss and a Chess.com-style review: how many of your moves were brilliant, great, best, good, inaccuracies, mistakes, misses or blunders;
 - your biggest mistakes, with the evaluation before and after, the move Stockfish preferred and what kind of error it was (a hung piece, a missed tactic, a spoiled endgame, …);
@@ -33,7 +33,7 @@ Across several games it shows how your accuracy develops over time, where you le
 
 ## How it works 🔑
 
-1. **Fetch the games.** Games come from the free [Chess.com Public API](https://www.chess.com/news/view/published-data-api), which needs no authentication (`chess_analyzer.fetch`). Chess variants such as Chess960 are skipped.
+1. **Fetch the games.** Games come from the free [Chess.com Public API](https://www.chess.com/news/view/published-data-api) or the [Lichess API](https://lichess.org/api#tag/Games/operation/apiGamesUser), which need no authentication (`chess_analyzer.fetch`). Lichess games are converted to the shape of Chess.com's, so everything after this step treats them the same; Lichess's classical games count as rapid and its correspondence games as daily. Chess variants such as Chess960 are skipped.
 2. **Parse the PGNs.** [`python-chess`](https://python-chess.readthedocs.io/) reads the PGN and replays the game (`chess_analyzer.parse`).
 3. **Check the opening.** The game's first 15 moves are compared with a local [Polyglot](https://www.chessprogramming.org/PolyGlot) book (`.bin`) or the [Lichess Opening Explorer](https://lichess.org/api#tag/Opening-Explorer) (`chess_analyzer.openings`). The first move that is not in the book is reported, along with the book alternatives, ranked by how well they score for the side to move.
 4. **Evaluate the moves, using the engine as little as possible** (`chess_analyzer.engine`). Each position is handled by the cheapest source that can answer it:
@@ -59,7 +59,7 @@ Across several games it shows how your accuracy develops over time, where you le
 6. **Find the critical moments** (`chess_analyzer.engine`). Most moves are developing moves or recaptures; a game is usually decided in a few positions where only one move holds. A position is a critical moment when the best move keeps it roughly equal (within ±1 pawn) and the second-best move leaves the side to move at least 2 pawns behind. Plain recaptures don't count, and at most three critical moments are kept per side, those with the largest gap between the two moves. To find the second-best move, the engine searches the position again without its best move. That is only needed in roughly equal positions where the best move was played or the game move lost at least 2 pawns (otherwise the game move itself shows that a second move holds), which kept the extra engine time to about 25% on a test game; games with long stretches of engine-best moves outside the opening book cost more. `--no-critical` skips it.
 7. **Look for patterns across games** (`chess_analyzer.stats`). Your average centipawn loss per game shows whether your play is getting more accurate. Openings are grouped by family (e.g. *Sicilian Defense*), with the move where you leave book on average: leaving it by move 6 means the opening is worth studying, while staying in book past move 12 means your time is better spent on the middlegame. Together with the loss per phase, the most common kind of mistake and your time management, this gives a short list of what to work on.
 8. **Check the opening's plans** (`chess_analyzer.plans`). Below master level, opponents leave book long before a memorised line ends, so knowing the opening's structure matters more than its moves. For 18 common openings, each side has one or two typical pawn breaks (in the French Defense, Black's ...c5 and ...f6; in the King's Indian, Black's ...e5 and ...f5). In the first 25 moves, each break is *played* (a pawn pushed up its file to that square), *unsound* (played, but a mistake or blunder), *missed* (the engine's best move at some point, but never played) or did not come up. Across games, the opening stats show how often you played each break, how often you missed it, and your score with and without it. This needs no extra engine time, and the opening stats include games analysed before this check existed.
-9. **Compare with your peers** (`chess_analyzer.peers`). Your endgame loss means little on its own: it matters whether players at your rating do better. Chess.com pairs players of the same rating, so the search starts from your recent opponents and walks from player to player, always visiting the one closest to your rating next. It keeps up to 100 rated games of your usual time control in which a player is rated within 100 points of you (at most 8 per player's archive, so a few players who play a lot don't make up the sample). That takes about 25 requests to the Chess.com API and no engine time. Your numbers and theirs are put side by side:
+9. **Compare with your peers** (`chess_analyzer.peers`). Your endgame loss means little on its own: it matters whether players at your rating do better. This works for Chess.com players only for now. Chess.com pairs players of the same rating, so the search starts from your recent opponents and walks from player to player, always visiting the one closest to your rating next. It keeps up to 100 rated games of your usual time control in which a player is rated within 100 points of you (at most 8 per player's archive, so a few players who play a lot don't make up the sample). That takes about 25 requests to the Chess.com API and no engine time. Your numbers and theirs are put side by side:
    - **Clock**, for every game, straight from Chess.com's clock times: seconds per move, the share of games in which a player fell below 10% of the starting clock, and the share lost on time. Chess.com's own accuracy is compared for the games someone ran a Game Review on.
    - **Accuracy and tactics**, once the peer games are analysed like your own: centipawn loss per phase, blunders, missed tactics and tactics allowed per 100 moves, and the share of critical moments found. Analysing 100 games is too much work for a Raspberry Pi or a phone, so they are analysed 10 at a time, and the comparison sharpens with each batch.
 
@@ -95,7 +95,8 @@ Some useful options:
 
 | Option | Description |
 | --- | --- |
-| `--months N` | Search the last N monthly archives (default 1). |
+| `--site lichess` | Download the games from Lichess instead of Chess.com (`chess.com`, the default, or `lichess`). |
+| `--months N` | Search games from the last N calendar months (default 1). |
 | `--max-games N` | Analyse at most N games (default 5). |
 | `--time-class blitz` | Only analyse `bullet`, `blitz`, `rapid` or `daily` games. |
 | `--pgn FILE` | Analyse games from a local PGN file instead of downloading them. |
@@ -110,7 +111,7 @@ Some useful options:
 | `--no-critical` | Don't look for critical moments, which saves some engine time. |
 | `--puzzles FILE` | Write your critical moments to `FILE` as PGN puzzles, newest first, with the best move as the solution. Lichess studies and most chess apps can import it. |
 
-If the Lichess explorer asks for authentication, create a [personal API token](https://lichess.org/account/oauth/token) and set it as `LICHESS_TOKEN`.
+If the Lichess explorer asks for authentication, create a [personal API token](https://lichess.org/account/oauth/token) and set it as `LICHESS_TOKEN`. The token is also used to download Lichess games, which Lichess then sends faster. At most 300 Lichess games are downloaded per search.
 
 Example output:
 
@@ -178,7 +179,7 @@ with chess.engine.SimpleEngine.popen_uci(find_engine()) as engine:
   <img src="docs/screenshot-analysis.png" alt="Analysis of a game with the best move shown" width="280">
 </p>
 
-The web app is the easiest way to use the analyzer from a phone. Enter a Chess.com username and tap a game. Stockfish analyses it, and the page shows:
+The web app is the easiest way to use the analyzer from a phone. Choose Chess.com or Lichess, enter your username and tap a game. Stockfish analyses it, and the page shows:
 
 - the board with an evaluation bar. Step through the moves with the arrows, by swiping the board or by tapping a move;
 - each move's classification. Inaccuracies, mistakes and blunders also show the engine's best move, and "Show best move" draws it on the board. Mistakes and blunders say what kind of error they were, and every move shows how long it took;
@@ -189,7 +190,7 @@ The web app is the easiest way to use the analyzer from a phone. Enter a Chess.c
 
 Under **Your progress**, the games list shows statistics over all your games that have been analysed: your average centipawn loss per game over time, the loss per game phase, the kinds of mistakes you make, where you leave book in each opening, how you use your clock, and what to work on. **Puzzles from your games** lists the critical moments of your most recent games, so you can solve the positions that decided them again. **Analyse the 10 most recent** queues your recent games, so the statistics fill in as they finish.
 
-**Compared with your peers** puts your numbers next to those of players at your rating (see [How it works](#how-it-works), step 9). **Find players** collects their games from Chess.com, which fills in the clock numbers at once; **Analyse 10 of their games** analyses a batch of them with the same engine as your own games, for the centipawn loss and tactics. Choose the time control, and whether to compare with players at your rating or 200 points higher.
+**Compared with your peers** puts your numbers next to those of players at your rating (see [How it works](#how-it-works), step 9). It is only shown for Chess.com players. **Find players** collects their games from Chess.com, which fills in the clock numbers at once; **Analyse 10 of their games** analyses a batch of them with the same engine as your own games, for the centipawn loss and tactics. Choose the time control, and whether to compare with players at your rating or 200 points higher.
 
 ### Stockfish on your own device
 
