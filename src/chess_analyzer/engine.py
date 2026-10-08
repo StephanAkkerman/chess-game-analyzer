@@ -50,6 +50,9 @@ BLUNDER = 300
 CRITICAL_EQUAL = 100
 CRITICAL_DROP = 200
 CRITICAL_PER_GAME = 3
+# The most moves of the engine's line kept for a move that went wrong, from
+# which puzzles take their solution.
+LINE_PLIES = 10
 
 # A brilliant move gives up at least this much material (in pawns), from a
 # position that was not already won by BRILLIANT_WINNING or more. Brilliant
@@ -130,6 +133,8 @@ class MoveAnalysis:
     ``second_san`` and ``second_eval`` give the engine's second-best move in
     the position before the move and its evaluation, when it was searched.
     ``critical`` marks a critical moment: see :func:`is_critical`.
+    ``best_line`` is the engine's line from the position before the move, in
+    UCI, for mistakes, misses, blunders and critical moments.
 
     ``reply_uci`` and ``reply_san`` give the opponent's best reply, ``phase``
     the game phase and ``category`` what kind of error a mistake or blunder
@@ -162,6 +167,7 @@ class MoveAnalysis:
     second_san: str = ""
     second_eval: int | None = None
     critical: bool = False
+    best_line: list[str] = field(default_factory=list)
 
     @property
     def move_number(self) -> int:
@@ -353,7 +359,8 @@ class Evaluation:
     """Score (White's point of view) and best move of a position.
 
     ``second`` and ``second_score`` are the second-best move and its score,
-    when the engine was asked for them.
+    when the engine was asked for them. ``line`` is the engine's principal
+    variation, starting with ``best``, when there is one.
     """
 
     score: int
@@ -361,6 +368,7 @@ class Evaluation:
     source: str
     second: chess.Move | None = None
     second_score: int | None = None
+    line: list[chess.Move] = field(default_factory=list)
 
 
 def _terminal_score(board: chess.Board) -> int:
@@ -440,7 +448,8 @@ def _search(
         info = engine.analyse(board, limit, root_moves=root_moves)
     score = info["score"].white().score(mate_score=MATE_SCORE)
     pv = info.get("pv") or [None]
-    return Evaluation(score, pv[0], ENGINE)
+    line = pv[:LINE_PLIES] if pv[0] is not None else []
+    return Evaluation(score, pv[0], ENGINE, line=line)
 
 
 def _search_second(
@@ -701,6 +710,11 @@ def analyze_game(
             analysis.moves[-1].critical = True
             if classification == "best":
                 analysis.moves[-1].classification = "great"
+        if best is not None and (
+            classification in ERRORS or analysis.moves[-1].critical
+        ):
+            line = before.line if before.line[:1] == [best] else [best]
+            analysis.moves[-1].best_line = [m.uci() for m in line]
     _keep_most_critical(analysis)
     return analysis
 

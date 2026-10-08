@@ -21,6 +21,7 @@ from chess_analyzer.insights import (
     WASTED_TIME,
 )
 from chess_analyzer.plans import MISSED, PLAYED, UNSOUND, check_plans
+from chess_analyzer.puzzles import candidates
 
 # A trend needs at least this many games, and the average centipawn loss of
 # the recent half must differ by this much from the older half.
@@ -159,6 +160,7 @@ def game_record(
         "phases": summary.get("phases") or {},
         "time": summary.get("time"),
         "critical": critical,
+        "puzzles": candidates(result, color),
         "errors": errors,
         "plans": check_plans(opening.get("name"), color, moves),
     }
@@ -443,15 +445,16 @@ def error_moves(
 
 
 def puzzles(records: list[dict], limit: int | None = MAX_PUZZLES) -> list[dict]:
-    """Turn the critical moments of the newest games into puzzles.
+    """Turn the moves the player missed in the newest games into puzzles.
 
-    Each puzzle is the position before the critical move, with the player to
-    move; the solution is the engine's best move. ``records`` are sorted
-    oldest first, as in :func:`player_stats`.
+    Each puzzle is the position before one of the player's mistakes, misses
+    or blunders, or a critical moment they did not find; the solution is the
+    move they did not play (see :func:`chess_analyzer.puzzles.candidates`).
+    ``records`` are sorted oldest first, as in :func:`player_stats`.
     """
     items = []
     for r in reversed(records):
-        for c in r.get("critical", []):
+        for p in r.get("puzzles", []):
             items.append(
                 {
                     "id": r["id"],
@@ -459,7 +462,7 @@ def puzzles(records: list[dict], limit: int | None = MAX_PUZZLES) -> list[dict]:
                     "opponent": r["opponent"],
                     "color": r["color"],
                     "link": r["link"],
-                    **c,
+                    **p,
                 }
             )
     return items[:limit]

@@ -21,7 +21,7 @@ from pathlib import Path
 import chess
 import chess.engine
 
-from chess_analyzer.engine import MATE_THRESHOLD
+from chess_analyzer.engine import LINE_PLIES, MATE_THRESHOLD
 
 # Longest mate the browser may report, in moves.
 MAX_MATE = 500
@@ -61,8 +61,10 @@ def parse_evaluation(search: dict, data: dict) -> dict:
     """Check an evaluation the browser sent for ``search``.
 
     ``data`` has the best move (``best``, UCI) and a score from the side to
-    move's point of view: centipawns (``cp``) or moves to mate (``mate``).
-    Returns the evaluation to store.
+    move's point of view: centipawns (``cp``) or moves to mate (``mate``),
+    and optionally the engine's line (``pv``, UCI moves starting with the
+    best move). Returns the evaluation to store. The line is cut at its first
+    illegal move: it only serves puzzles, so it need not be complete.
     """
     board = chess.Board(search["fen"])
     for uci in search["moves"]:
@@ -74,16 +76,35 @@ def parse_evaluation(search: dict, data: dict) -> dict:
     allowed = search["searchmoves"] or [m.uci() for m in board.legal_moves]
     if best.uci() not in allowed:
         raise InvalidEvaluation(f"Search {search['id']}: {best} is not allowed.")
+    line = _legal_line(board, data.get("pv"), best)
     cp, mate = data.get("cp"), data.get("mate")
     if mate is not None:
         if not isinstance(mate, int) or mate == 0 or abs(mate) > MAX_MATE:
             raise InvalidEvaluation(f"Search {search['id']}: invalid mate score.")
-        return {"best": best.uci(), "mate": mate}
+        return {"best": best.uci(), "mate": mate, "pv": line}
     if not isinstance(cp, int):
         raise InvalidEvaluation(f"Search {search['id']}: no score.")
     # Anything larger would read as a forced mate.
     limit = MATE_THRESHOLD - 1
-    return {"best": best.uci(), "cp": max(-limit, min(limit, cp))}
+    return {"best": best.uci(), "cp": max(-limit, min(limit, cp)), "pv": line}
+
+
+def _legal_line(board: chess.Board, pv, best: chess.Move) -> list[str]:
+    """Return the legal start of ``pv``, if it starts with ``best``."""
+    if not isinstance(pv, list) or pv[:1] != [best.uci()]:
+        return [best.uci()]
+    board = board.copy(stack=False)
+    line = []
+    for uci in pv[:LINE_PLIES]:
+        try:
+            move = chess.Move.from_uci(uci) if isinstance(uci, str) else None
+        except ValueError:
+            break
+        if move is None or not board.is_legal(move):
+            break
+        board.push(move)
+        line.append(move.uci())
+    return line
 
 
 class DeviceEngine:
@@ -123,9 +144,10 @@ class DeviceEngine:
             score: chess.engine.Score = chess.engine.Mate(found["mate"])
         else:
             score = chess.engine.Cp(found["cp"])
+        line = found.get("pv") or [found["best"]]
         return {
             "score": chess.engine.PovScore(score, board.turn),
-            "pv": [chess.Move.from_uci(found["best"])],
+            "pv": [chess.Move.from_uci(uci) for uci in line],
         }
 
 

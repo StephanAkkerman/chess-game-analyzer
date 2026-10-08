@@ -239,3 +239,22 @@ def test_device_analysis_needs_engine_files(tmp_path, scholars_mate_pgn):
             "/api/analyses", json={"pgn": scholars_mate_pgn, "engine": "device"}
         )
     assert response.status_code == 422
+
+
+def test_engine_line_is_kept_up_to_its_first_illegal_move():
+    search = describe_search(chess.Board(), None)
+    data = {"best": "e2e4", "cp": 20, "pv": ["e2e4", "e7e5", "e2e4", "g1f3"]}
+    assert parse_evaluation(search, data)["pv"] == ["e2e4", "e7e5"]
+    # A line that does not start with the best move is left out.
+    data = {"best": "e2e4", "cp": 20, "pv": ["d2d4", "d7d5"]}
+    assert parse_evaluation(search, data)["pv"] == ["e2e4"]
+    assert parse_evaluation(search, {"best": "e2e4", "cp": 20})["pv"] == ["e2e4"]
+
+    engine = DeviceEngine(
+        {search["id"]: {"best": "e2e4", "cp": 20, "pv": ["e2e4", "e7e5"]}}
+    )
+    info = engine.analyse(chess.Board())
+    assert [m.uci() for m in info["pv"]] == ["e2e4", "e7e5"]
+    # Evaluations stored before lines were kept still work.
+    engine = DeviceEngine({search["id"]: {"best": "e2e4", "cp": 20}})
+    assert [m.uci() for m in engine.analyse(chess.Board())["pv"]] == ["e2e4"]

@@ -16,6 +16,7 @@ from chess_analyzer.engine import (
 from chess_analyzer.insights import CATEGORIES, CATEGORY_LABELS
 from chess_analyzer.openings import OpeningDeviation
 from chess_analyzer.parse import opening_name
+from chess_analyzer.puzzles import solution_line
 
 
 def format_eval(cp: int | None, source: str | None = None) -> str:
@@ -219,11 +220,12 @@ def format_player_stats(stats: dict, username: str) -> str:
         critical = stats["critical"]
         found = f"{critical['found']} of {critical['total']}"
         lines += ["", f"Critical moments: you found the only good move in {found}"]
+    if stats["puzzles"]:
+        lines += ["", "Puzzles from moves you missed (the position before the move)"]
         for puzzle in stats["puzzles"]:
-            verdict = "found" if puzzle["found"] else "missed"
             lines.append(
-                f"  {puzzle['date'] or '?':<10}  {puzzle['label']:<12} {verdict:<6}  "
-                f"{puzzle['fen']}"
+                f"  {puzzle['date'] or '?':<10}  {puzzle['label']:<12} "
+                f"{puzzle['kind']:<9}  {puzzle['fen']}"
             )
     if time := format_time_summary(stats["time"]):
         lines += ["", f"Time: {time}"]
@@ -247,10 +249,12 @@ def format_plan(plan: dict) -> str:
 
 
 def format_puzzles_pgn(puzzles: list[dict]) -> str:
-    """Write critical moments as PGN puzzles.
+    """Write the moves a player missed as PGN puzzles.
 
-    Each puzzle starts from the position before the critical move, with the
-    engine's best move as the solution. ``puzzles`` come from
+    Each puzzle starts from the position before the missed move, with the
+    solution as the main line: the move that should have been played and,
+    when the engine's line is known, the forcing moves after it (see
+    :func:`chess_analyzer.puzzles.solution_line`). ``puzzles`` come from
     :func:`chess_analyzer.stats.puzzles`. Lichess studies and most chess apps
     can import the result.
     """
@@ -259,22 +263,25 @@ def format_puzzles_pgn(puzzles: list[dict]) -> str:
         game = chess.pgn.Game()
         board = chess.Board(puzzle["fen"])
         game.setup(board)
-        # The game move would give the solution away when it was found.
+        # The game move would give the solution away: name the move number.
         side = "White" if board.turn == chess.WHITE else "Black"
         move_number = (puzzle["ply"] + 1) // 2
-        game.headers["Event"] = f"Critical moment, move {move_number}, {side} to move"
+        game.headers["Event"] = f"Puzzle, move {move_number}, {side} to move"
         game.headers["Site"] = puzzle.get("link") or "?"
         game.headers["Date"] = (puzzle.get("date") or "????-??-??").replace("-", ".")
         game.headers["Result"] = "*"
         if opponent := puzzle.get("opponent"):
             game.headers["Opponent"] = opponent
-        move = chess.Move.from_uci(puzzle["best_uci"]) if puzzle["best_uci"] else None
-        if move is not None and move in board.legal_moves:
-            node = game.add_variation(move)
-            node.comment = "The only move that keeps the balance." + (
-                ""
-                if puzzle["found"]
-                else f" In the game, {puzzle['label']} was played."
+        line = solution_line(board, puzzle.get("line") or [puzzle["best_uci"]])
+        node = game
+        for move in line:
+            node = node.add_variation(move)
+        if line:
+            what = (
+                "the only move that kept the balance was missed"
+                if puzzle.get("kind") == "critical"
+                else f"a {puzzle.get('kind', 'mistake')}"
             )
+            game.next().comment = f"In the game, {puzzle['label']} was played: {what}."
         games.append(str(game))
     return "\n\n".join(games) + "\n" if games else ""

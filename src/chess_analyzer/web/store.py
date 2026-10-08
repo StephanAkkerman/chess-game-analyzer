@@ -24,6 +24,13 @@ CREATE TABLE IF NOT EXISTS analyses (
     updated_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS analyses_key ON analyses (key);
+CREATE TABLE IF NOT EXISTS puzzle_reviews (
+    username TEXT NOT NULL,
+    key TEXT NOT NULL,
+    data TEXT NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (username, key)
+);
 CREATE TABLE IF NOT EXISTS peer_samples (
     username TEXT NOT NULL,
     time_control TEXT NOT NULL,
@@ -239,3 +246,23 @@ class Store:
 
     def set_failed(self, job_id: str, error: str) -> None:
         self._update(job_id, status=FAILED, error=error)
+
+    def puzzle_reviews(self, username: str) -> dict[str, dict]:
+        """Return ``username``'s puzzle reviews by puzzle key.
+
+        See :func:`chess_analyzer.puzzles.review`.
+        """
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT key, data FROM puzzle_reviews WHERE username = ?",
+                (username.lower(),),
+            ).fetchall()
+        return {row["key"]: json.loads(row["data"]) for row in rows}
+
+    def save_puzzle_review(self, username: str, key: str, data: dict) -> None:
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT OR REPLACE INTO puzzle_reviews (username, key, data,"
+                " updated_at) VALUES (?, ?, ?, ?)",
+                (username.lower(), key, json.dumps(data), time.time()),
+            )
