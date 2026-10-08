@@ -19,9 +19,11 @@ from chess_analyzer.insights import (
     TIME_FLAGS,
     TIME_TROUBLE,
     WASTED_TIME,
+    parse_time_control,
 )
 from chess_analyzer.plans import MISSED, PLAYED, UNSOUND, check_plans
 from chess_analyzer.puzzles import candidates
+from chess_analyzer.weaknesses import CATEGORY_ADVICE, find_weaknesses
 
 # A trend needs at least this many games, and the average centipawn loss of
 # the recent half must differ by this much from the older half.
@@ -48,23 +50,13 @@ MAX_EXAMPLES = 20
 # its score difference once there are this many games with and without it.
 MIN_PLAN_GAMES = 2
 PLAN_SCORE_GAP = 0.25
+# The opening moves whose clock use is compared between openings, and the
+# longest thinks among them to keep per game.
+CLOCK_MOVES = 15
+MAX_THINKS = 3
 # Words that end the name of an opening family, as in "Sicilian Defense
 # Najdorf Variation".
 FAMILY_WORDS = ("Defense", "Defence", "Game", "Opening", "Gambit", "Attack", "System")
-
-CATEGORY_ADVICE = {
-    "allowed_mate": "check your opponent's checks and threats against your "
-    "king before every move",
-    "missed_mate": "practise mating patterns",
-    "hung_piece": "before each move, check which of your pieces it leaves undefended",
-    "refuted_attack": "calculate attacks and sacrifices further before "
-    "committing to them",
-    "allowed_tactic": "before each move, look for your opponent's checks and "
-    "captures in reply",
-    "conversion": "practise converting winning endgames",
-    "missed_tactic": "solve tactics puzzles to spot forcing moves",
-    "positional": "study plans and pawn structures",
-}
 
 
 def opening_family(name: str) -> str:
@@ -137,6 +129,7 @@ def game_record(
             "label": m["label"],
             "classification": m["classification"],
             "category": m["category"],
+            "phase": m.get("phase"),
             "best_san": m["best_san"],
         }
         for m in moves
@@ -151,6 +144,7 @@ def game_record(
         "result": _result_for(headers.get("Result", ""), color),
         "acpl": summary["acpl"],
         "opening": opening.get("name"),
+        "family": opening_family(opening["name"]) if opening.get("name") else None,
         "opening_checked": opening.get("checked", False),
         "left_book": left_book,
         "left_book_ply": left_book_ply,
@@ -163,6 +157,36 @@ def game_record(
         "puzzles": candidates(result, color),
         "errors": errors,
         "plans": check_plans(opening.get("name"), color, moves),
+        **opening_clock(moves, color, headers.get("TimeControl")),
+    }
+
+
+def opening_clock(moves: list[dict], color: str, time_control: str | None) -> dict:
+    """How much of the starting clock ``color`` used in the opening.
+
+    Returns ``clock_used``, the share of the starting time spent on the first
+    :data:`CLOCK_MOVES` moves (``None`` without clock times or for daily
+    games), and ``thinks``, the longest of those moves, longest first.
+    """
+    control = parse_time_control(time_control)
+    if control is None or not control[0]:
+        return {"clock_used": None, "thinks": []}
+    timed = [
+        m
+        for m in moves
+        if m["color"] == color
+        and m["ply"] <= 2 * CLOCK_MOVES
+        and m.get("time_spent") is not None
+    ]
+    if len(timed) < CLOCK_MOVES:
+        return {"clock_used": None, "thinks": []}
+    longest = sorted(timed, key=lambda m: -m["time_spent"])[:MAX_THINKS]
+    return {
+        "clock_used": min(1.0, sum(m["time_spent"] for m in timed) / control[0]),
+        "thinks": [
+            {"ply": m["ply"], "label": m["label"], "seconds": round(m["time_spent"])}
+            for m in longest
+        ],
     }
 
 
@@ -478,8 +502,9 @@ def player_stats(records: list[dict]) -> dict:
         ``openings`` (each with its games and pawn breaks), ``categories``,
         ``category_moves`` (the moves of each kind of mistake), ``phases``, ``time``, ``critical``
         (how many critical moments the player met and found), ``puzzles``
-        (critical moments from the most recent games, newest first) and
-        ``insights``, a list of sentences naming the clearest weaknesses.
+        (critical moments from the most recent games, newest first),
+        ``weaknesses`` (see :func:`chess_analyzer.weaknesses.find_weaknesses`)
+        and ``insights``, a list of sentences naming the clearest weaknesses.
     """
     records = sorted(records, key=lambda r: (r["date"], r["utc_time"]))
     acpls = [r["acpl"] for r in records]
@@ -507,6 +532,7 @@ def player_stats(records: list[dict]) -> dict:
             "found": sum(c["found"] for r in records for c in r.get("critical", [])),
         },
         "puzzles": puzzles(records),
+        "weaknesses": find_weaknesses(records),
     }
     stats["insights"] = _insights(stats)
     return stats

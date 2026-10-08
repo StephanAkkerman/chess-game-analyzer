@@ -575,7 +575,8 @@ button.alt:hover { background: var(--surface-2); }
 .drill summary > span:first-child::before { content: "▸ "; color: var(--muted); }
 .drill[open] summary > span:first-child::before { content: "▾ "; }
 .drill[open] summary { margin-bottom: 4px; }
-.drill > div, .drill > p { margin: 0 0 8px 1em; }
+.drill > div, .drill > p, .drill > ul { margin: 0 0 8px 1em; }
+.coach-summary { margin: 8px 0; }
 button.link.opening-name { text-align: left; text-decoration: none; color: var(--text); font-weight: 400; display: inline; }
 .opening-name::after { content: " ▸"; color: var(--muted); }
 .opening-name[aria-expanded="true"]::after { content: " ▾"; }
