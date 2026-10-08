@@ -16,7 +16,8 @@ Chess Game Analyzer downloads your recent games from Chess.com or Lichess, runs 
 - how you used your clock: mistakes played in under 3 seconds, mistakes made in time trouble and long thinks on obvious moves;
 - the move where you or your opponent left opening theory, and the book moves that score best from that position;
 - whether you carried out the typical pawn breaks of your opening (such as ...c5 and ...f6 in the French Defense), or missed them when the engine wanted them;
-- the critical moments: the few positions where only one move kept the game balanced, and whether you found it.
+- the critical moments: the few positions where only one move kept the game balanced, and whether you found it;
+- for every move, an explanation in plain English of why it is good or bad: what it does, how the opponent punishes it and what the better move would have achieved, instead of just an engine line.
 
 Every position where you missed the best move becomes a puzzle you solve by moving the pieces, and a spaced-repetition trainer brings each one back until you find it every time.
 
@@ -58,6 +59,11 @@ Across several games it shows how your accuracy develops over time, where you le
    | Positional | None of the above. |
 
    Each move is also put in a phase: the endgame starts once at most six queens, rooks, bishops and knights are left, and the opening lasts until move 10 unless pieces are traded off earlier. From Chess.com's clock times (`[%clk]`), mistakes played in under 3 seconds are flagged as impulsive, those with less than 10% of the starting time left as made in time trouble, and long thinks (10% of the starting time, at most two minutes) on forced moves or plain recaptures as wasted time.
+   Every move also gets an explanation in words (`chess_analyzer.explain`), so you learn *why* rather than just *what*. python-chess works out concrete facts about the move: what it captures and whether that wins material, checks, threats and forks, pins, piece development, control of the centre, castling and king safety, passed pawns, and the pieces it defends or leaves unprotected. For a mistake the same is done for the opponent's best reply, to show how it is punished, and for the engine's best move, with the material its line wins. The facts are put into sentences such as:
+
+   > 3...Bc5 is a mistake: it turns a roughly equal position for Black into a clearly worse position. It develops the bishop. The problem is that White answers Ng5, which puts pressure on the pawn on f7. Better was Nf6, which puts pressure on the pawn on e4 and develops the knight.
+
+   This needs no engine time and no model, so it runs anywhere, including on a Raspberry Pi. Optionally, a small language model rewords the explanation the way a coach would talk (see [A coach for the explanations](#a-coach-for-the-explanations)). It only gets the facts, never the board: language models are poor at chess but good at wording, so the facts stay the source of truth.
 6. **Find the critical moments** (`chess_analyzer.engine`). Most moves are developing moves or recaptures; a game is usually decided in a few positions where only one move holds. A position is a critical moment when the best move keeps it roughly equal (within ±1 pawn) and the second-best move leaves the side to move at least 2 pawns behind. Plain recaptures don't count, and at most three critical moments are kept per side, those with the largest gap between the two moves. To find the second-best move, the engine searches the position again without its best move. That is only needed in roughly equal positions where the best move was played or the game move lost at least 2 pawns (otherwise the game move itself shows that a second move holds), which kept the extra engine time to about 25% on a test game; games with long stretches of engine-best moves outside the opening book cost more. `--no-critical` skips it.
 7. **Turn your misses into puzzles** (`chess_analyzer.puzzles`). The position before each of your mistakes, misses and blunders, and each critical moment you got wrong, becomes a puzzle; moves you found are left out. The solution is the move you did not play, followed by the engine's line for as long as it stays forcing: it ends with your move, after at most three of them, at checkmate or at your last capture, check or promotion. Puzzles come back on a schedule, like Anki flashcards: one you solve comes back after 3 days, then after a week, two weeks, a month and so on; one you fail comes back the next day and starts over. At most 10 new puzzles a day are added to the reviews that are due.
 8. **Look for patterns across games** (`chess_analyzer.stats`). Your average centipawn loss per game shows whether your play is getting more accurate. Openings are grouped by family (e.g. *Sicilian Defense*), with the move where you leave book on average: leaving it by move 6 means the opening is worth studying, while staying in book past move 12 means your time is better spent on the middlegame. Together with the loss per phase, the most common kind of mistake and your time management, this gives a short list of what to work on.
@@ -131,7 +137,12 @@ Opening
 Black: average centipawn loss 1020
   2 book, 0 forced, 0 brilliant, 0 great, 0 best, 0 good, 0 inaccuracy, 0 mistake, 0 miss, 1 blunder
   Biggest mistakes:
-    3...Nf6      blunder  -0.20 -> +M1  best was g6
+    3...Nf6      blunder  -0.20 -> +M1  best was g6 (allowed mate)
+      3...Nf6 is a blunder: it turns a roughly equal position for Black
+      into a forced mate for the opponent. It attacks the queen on h5,
+      develops the knight and controls the centre. The problem is that
+      White answers Qxf7#, which delivers checkmate. Better was g6,
+      which attacks the queen on h5.
 
 Engine searched 2 of 8 positions (5 book, 1 terminal).
 ```
@@ -186,6 +197,7 @@ The web app is the easiest way to use the analyzer from a phone. Choose Chess.co
 
 - the board with an evaluation bar. Step through the moves with the arrows, by swiping the board or by tapping a move;
 - each move's classification. Inaccuracies, mistakes and blunders also show the engine's best move, and "Show best move" draws it on the board; hovering over the best move's name previews it. The ↗ button below the board always draws the engine's best move in the position shown, so you can follow the engine's choices through the game, except before your own misses you haven't looked at yet. For your own mistakes, misses and blunders the best move stays hidden until you ask for it, so you can work it out first or solve it as a puzzle. Mistakes and blunders say what kind of error they were, and every move shows how long it took;
+- under each move, **Why**: an explanation of what the move does, how it is punished and what the better move would have done. While the best move of your own miss is still hidden, so is its part of the explanation. When the server has a language model, **Ask the coach** rewords it;
 - an evaluation graph. Tap or drag on it to jump through the game;
 - both players' average centipawn loss and biggest mistakes;
 - where the game left opening theory, and how the book moves score. Hover over a book move, or tap it, to see it played on the board;
@@ -245,8 +257,20 @@ The server is configured with environment variables:
 | `OPENING_EXPLORER` | `lichess` | `lichess`, `masters` or `none`. |
 | `OPENING_BOOK` | *(empty)*; `/opt/books/book.bin` in Docker | Polyglot book to use instead of the explorer, when the file exists. |
 | `LICHESS_TOKEN` | *(empty)* | Lichess API token for the explorer. |
+| `COACH_URL` / `COACH_MODEL` | *(empty)* | OpenAI-compatible API and model that reword move explanations, e.g. `http://ollama:11434/v1` and `qwen2.5:1.5b`. See [A coach for the explanations](#a-coach-for-the-explanations). |
+| `COACH_API_KEY` | *(empty)* | Bearer token for a hosted API. |
+| `COACH_TIMEOUT` | `60` | Seconds to wait for the model before showing the plain explanation. |
 | `DATA_DIR` | `data` | Where the SQLite database of analyses is kept. |
 | `HOST` / `PORT` | `127.0.0.1` / `8000` | Address to listen on. |
+
+### A coach for the explanations
+
+The plain explanations need nothing extra. For friendlier wording, the server can pass them to a language model through any OpenAI-compatible chat API. Where it runs is up to you:
+
+- **On the Pi, with [Ollama](https://ollama.com).** `docker-compose.yml` has an `ollama` service under the `coach` profile. A model of 1 to 2 billion parameters, such as `qwen2.5:1.5b` (about 1 GB), fits next to the analyzer on a Pi 5 with 8 GB or a Pi 4 with 4 GB or more. Expect a few words per second, so an explanation takes tens of seconds; that is an estimate, not measured on a real Pi. Each move is reworded once and stored, and the Pi generates one answer at a time.
+- **A hosted API**, for speed: set `COACH_URL` to its base URL (ending in `/v1`), `COACH_MODEL` and `COACH_API_KEY`. Only the explanation's text and facts are sent, no usernames.
+
+The model runs on the server rather than in the visitor's browser: models that run in a browser need WebGPU and a download of a gigabyte or more, which most phones can't handle. A custom-trained model isn't needed either, since the model only rewords facts and never has to understand the position. Answers that mention a square or move that isn't in the facts are thrown away, and the plain explanation is shown instead, as it is when the model is slow or unavailable.
 
 ## Self-hosting on a Raspberry Pi 🍓
 

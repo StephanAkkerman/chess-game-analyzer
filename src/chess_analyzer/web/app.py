@@ -26,7 +26,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from chess_analyzer import __version__
+from chess_analyzer.coach import Coach
 from chess_analyzer.engine import find_engine
+from chess_analyzer.explain import explain_ply
 from chess_analyzer.fetch import ChessComClient, LichessClient
 from chess_analyzer.peers import (
     RATING_WINDOW,
@@ -165,6 +167,7 @@ def create_app(
     chesscom: ChessComClient | None = None,
     tablebase_factory: TablebaseFactory | None = None,
     lichess: LichessClient | None = None,
+    coach: Coach | None = None,
 ) -> FastAPI:
     """Build the app.
 
@@ -179,6 +182,13 @@ def create_app(
     server_engine = engine_factory is not None or bool(
         find_engine(settings.stockfish_path)
     )
+    if coach is None and settings.coach_url and settings.coach_model:
+        coach = Coach(
+            settings.coach_url,
+            settings.coach_model,
+            api_key=settings.coach_api_key,
+            timeout=settings.coach_timeout,
+        )
     games_cache: dict[tuple[str, str, int], tuple[float, list[dict]]] = {}
     cache_lock = threading.Lock()
     # One peer search at a time: Chess.com asks clients not to send requests
@@ -258,6 +268,7 @@ def create_app(
             "opening_source": settings.opening_label,
             "tablebases": has_tablebases(settings.syzygy_path),
             "server_engine": server_engine,
+            "coach": coach is not None,
             "device_engine": device_engine
             and {
                 kind: f"/engine/{name}" if name else None
@@ -523,6 +534,38 @@ def create_app(
         if puzzle is None:
             raise HTTPException(404, "There is no puzzle at that move.")
         return puzzle
+
+    @app.get("/api/analyses/{job_id}/explanations/{ply}")
+    def explain_move(
+        job_id: str,
+        ply: int,
+        hide_best: bool = False,
+        use_coach: Annotated[bool, Query(alias="coach")] = False,
+    ) -> dict:
+        """Explain move ``ply`` of a finished analysis in plain English.
+
+        With ``hide_best`` the engine's best move is left out. With ``coach``
+        a language model rewords the explanation, when one is configured;
+        its answers are stored, so each move costs one generation at most.
+        """
+        job = app.state.store.get(job_id)
+        if job is None or job.status != DONE:
+            raise HTTPException(404, "Analysis not found.")
+        explanation = explain_ply(job.result, ply, hide_best=hide_best)
+        if explanation is None:
+            raise HTTPException(404, "There is no such move.")
+        explanation["coach"] = False
+        if use_coach and coach is not None and explanation["text"]:
+            store = app.state.store
+            text = store.explanation(job_id, ply, hide_best)
+            if text is None:
+                text = coach.reword(explanation["text"], explanation["facts"])
+                if text:
+                    store.save_explanation(job_id, ply, hide_best, text)
+            if text:
+                explanation["text"] = text
+                explanation["coach"] = True
+        return explanation
 
     @app.get("/api/pieces/{name}.svg")
     def piece(name: str) -> Response:

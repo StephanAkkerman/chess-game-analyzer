@@ -41,6 +41,11 @@ class Settings:
 
     ``browser_engine_dir`` holds the Stockfish.js builds that let browsers
     run the engine themselves (see ``deploy/fetch-stockfish-js.sh``).
+
+    ``coach_url`` and ``coach_model`` point at an OpenAI-compatible API
+    whose language model rewords move explanations (see
+    :mod:`chess_analyzer.coach`). Without them the plain explanations are
+    used.
     """
 
     data_dir: Path = Path("data")
@@ -62,6 +67,10 @@ class Settings:
     opening_plies: int = 30
     lichess_token: str | None = field(default=None, repr=False)
     access_code: str | None = field(default=None, repr=False)
+    coach_url: str | None = None
+    coach_model: str | None = None
+    coach_api_key: str | None = field(default=None, repr=False)
+    coach_timeout: float = 60.0
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -86,6 +95,10 @@ class Settings:
             opening_plies=_env_int("OPENING_PLIES", d.opening_plies),
             lichess_token=os.environ.get("LICHESS_TOKEN") or None,
             access_code=os.environ.get("ACCESS_CODE") or None,
+            coach_url=os.environ.get("COACH_URL") or None,
+            coach_model=os.environ.get("COACH_MODEL") or None,
+            coach_api_key=os.environ.get("COACH_API_KEY") or None,
+            coach_timeout=_env_float("COACH_TIMEOUT", d.coach_timeout),
         )
 
     @property

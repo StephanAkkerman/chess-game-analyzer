@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import textwrap
+
 import chess
 import chess.pgn
 
@@ -12,11 +14,14 @@ from chess_analyzer.engine import (
     MATE_THRESHOLD,
     TABLEBASE,
     GameAnalysis,
+    MoveAnalysis,
 )
+from chess_analyzer.explain import explain_move
 from chess_analyzer.insights import CATEGORIES, CATEGORY_LABELS
 from chess_analyzer.openings import OpeningDeviation
 from chess_analyzer.parse import opening_name
 from chess_analyzer.puzzles import solution_line
+from chess_analyzer.serialize import move_to_dict
 
 
 def format_eval(cp: int | None, source: str | None = None) -> str:
@@ -34,6 +39,14 @@ def format_eval(cp: int | None, source: str | None = None) -> str:
         sign = "+" if cp > 0 else "-"
         return f"{sign}M{moves}" if moves else f"{sign}#"
     return f"{cp / 100:+.2f}"
+
+
+def _explanation(analysis: GameAnalysis, move: MoveAnalysis) -> list[str]:
+    """The plain-English explanation of ``move``, wrapped and indented."""
+    index = analysis.moves.index(move)
+    previous = move_to_dict(analysis.moves[index - 1]) if index else None
+    text = explain_move(move_to_dict(move), previous)["text"]
+    return textwrap.wrap(text, 72, initial_indent=" " * 6, subsequent_indent=" " * 6)
 
 
 def _color_name(color: chess.Color) -> str:
@@ -123,6 +136,7 @@ def format_game_report(
                     f"{format_eval(m.eval_after, m.source)}  "
                     f"best was {m.best_san}{kind}"
                 )
+                lines += _explanation(analysis, m)
             critical = analysis.critical_moments(c)
             if critical:
                 lines.append("  Critical moments (only one move kept the balance):")

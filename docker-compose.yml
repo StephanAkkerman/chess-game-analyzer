@@ -21,6 +21,10 @@ services:
       MAX_QUEUE: ${MAX_QUEUE:-20}
       OPENING_EXPLORER: ${OPENING_EXPLORER:-lichess}
       LICHESS_TOKEN: ${LICHESS_TOKEN:-}
+      COACH_URL: ${COACH_URL:-}
+      COACH_MODEL: ${COACH_MODEL:-}
+      COACH_API_KEY: ${COACH_API_KEY:-}
+      COACH_TIMEOUT: ${COACH_TIMEOUT:-60}
     volumes:
       - analyzer-data:/data
       # The image includes an opening book and the endgame tablebases. To use
@@ -63,7 +67,23 @@ services:
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
 
+  # Optional language model that rewords move explanations like a coach.
+  # Add "coach" to COMPOSE_PROFILES, set COACH_URL=http://ollama:11434/v1 and
+  # COACH_MODEL=qwen2.5:1.5b, then download the model once with
+  # `docker compose exec ollama ollama pull qwen2.5:1.5b`.
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["coach"]
+    restart: unless-stopped
+    environment:
+      # Keep the model loaded, and generate one answer at a time.
+      OLLAMA_KEEP_ALIVE: 24h
+      OLLAMA_NUM_PARALLEL: 1
+    volumes:
+      - ollama-models:/root/.ollama
+
 volumes:
   analyzer-data:
+  ollama-models:
   caddy-data:
   caddy-config:
