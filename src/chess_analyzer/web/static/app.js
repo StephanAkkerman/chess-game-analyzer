@@ -627,6 +627,7 @@ async function loadStats(username) {
   );
   body.hidden = false;
   renderTrend(stats);
+  renderWeaknesses(stats);
   document.getElementById("insights").replaceChildren(
     ...stats.insights.map((line) => el("li", { text: line })),
   );
@@ -951,6 +952,87 @@ function renderProgressDetails(stats) {
     children.push(el("h3", { text: "Clock" }), el("p", { class: "small", text: `${parts.join(", ")}.` }));
   }
   box.replaceChildren(...children);
+}
+
+// Weaknesses that keep coming back, each with the moves behind it. Those the
+// player got wrong open as puzzles; a language model can sum them up.
+function renderWeaknesses(stats) {
+  const box = document.getElementById("weaknesses");
+  const weaknesses = stats.weaknesses || [];
+  if (!weaknesses.length) return box.replaceChildren();
+  const coachBox = el("div", { class: "explain coach-summary" });
+  box.replaceChildren(
+    el("h3", { text: "Recurring weaknesses" }),
+    el("p", { class: "muted small", text: "Patterns across your games. Tap one to see the moves behind it." }),
+    el("ul", { class: "drill-list" }, ...weaknesses.map((w) => el("li", {}, weaknessCard(w)))),
+    coachBox,
+  );
+  getConfig().then((config) => {
+    if (!config.coach) return;
+    const ask = async () => {
+      coachBox.replaceChildren(el("p", { class: "muted small", text: "The coach is thinking…" }));
+      let data;
+      try {
+        data = await api(`/api/players/${encodeURIComponent(stats.username)}/weaknesses/coach`);
+      } catch {
+        data = { text: null };
+      }
+      coachBox.replaceChildren(
+        data.text
+          ? el("p", {}, el("strong", { text: "Coach. " }), data.text)
+          : el("p", { class: "muted small", text: "The coach is not available right now." }),
+      );
+    };
+    coachBox.replaceChildren(
+      el("button", { type: "button", class: "link", text: "Ask the coach what to work on first", onclick: ask }),
+    );
+  });
+}
+
+function weaknessCard(w) {
+  const children = [el("p", { class: "small", text: w.text })];
+  if (w.examples.length) children.push(errorMoveList(w.examples, w.examples.length));
+  const puzzles = w.examples.filter((m) => m.puzzle);
+  if (puzzles.length) {
+    children.push(
+      el(
+        "p",
+        { class: "small" },
+        "Practise them as puzzles: ",
+        ...puzzles.flatMap((m, i) => [
+          i ? ", " : "",
+          el("a", { href: `#/a/${encodeURIComponent(m.id)}/p/${m.ply}`, text: m.label }),
+        ]),
+      ),
+    );
+  }
+  if (w.thinks?.length) {
+    children.push(
+      el("p", { class: "muted small", text: "Your longest thinks in these openings:" }),
+      el(
+        "ul",
+        { class: "jump-list" },
+        ...w.thinks.map((t) =>
+          el(
+            "li",
+            {},
+            el(
+              "a",
+              { class: "button", href: `#/a/${encodeURIComponent(t.id)}/m/${t.ply}` },
+              el("span", {}, el("span", { class: `piece-dot ${t.color}` }), `${t.label} vs ${t.opponent || "?"}`),
+              el("span", { class: "muted", text: formatSeconds(t.seconds) }),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+  return el(
+    "details",
+    { class: "drill" },
+    el("summary", {}, el("span", { text: w.title })),
+    ...children,
+  );
 }
 
 // The moves behind one kind of mistake, each opening its game at that move.

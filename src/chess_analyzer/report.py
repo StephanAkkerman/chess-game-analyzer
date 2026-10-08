@@ -243,6 +243,20 @@ def format_player_stats(stats: dict, username: str) -> str:
             )
     if time := format_time_summary(stats["time"]):
         lines += ["", f"Time: {time}"]
+    if stats.get("weaknesses"):
+        lines += ["", "Recurring weaknesses"]
+        for w in stats["weaknesses"]:
+            lines.append(f"  - {w['title']}.")
+            lines += [f"    {line}" for line in textwrap.wrap(w["text"], 72)]
+            moves = [
+                f"{e['label']} vs {e['opponent'] or '?'}" for e in w["examples"][:3]
+            ]
+            moves += [
+                f"{t['label']} ({t['seconds']} s) vs {t['opponent'] or '?'}"
+                for t in w.get("thinks", [])[:3]
+            ]
+            if moves:
+                lines.append(f"    For example: {', '.join(moves)}")
     if stats["insights"]:
         lines += ["", "What to work on"]
         lines += [f"  - {line}" for line in stats["insights"]]

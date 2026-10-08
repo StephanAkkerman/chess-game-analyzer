@@ -47,6 +47,11 @@ CREATE TABLE IF NOT EXISTS explanations (
     created_at REAL NOT NULL,
     PRIMARY KEY (job_id, ply, hide_best)
 );
+CREATE TABLE IF NOT EXISTS coach_texts (
+    key TEXT PRIMARY KEY,
+    text TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
 """
 
 QUEUED, RUNNING, DONE, FAILED = "queued", "running", "done", "failed"
@@ -293,4 +298,20 @@ class Store:
                 "INSERT OR REPLACE INTO explanations (job_id, ply, hide_best, text,"
                 " created_at) VALUES (?, ?, ?, ?, ?)",
                 (job_id, ply, int(hide_best), text, time.time()),
+            )
+
+    def coach_text(self, key: str) -> str | None:
+        """The coach's wording of other texts, by a hash of what it was given."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT text FROM coach_texts WHERE key = ?", (key,)
+            ).fetchone()
+        return row["text"] if row else None
+
+    def save_coach_text(self, key: str, text: str) -> None:
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT OR REPLACE INTO coach_texts (key, text, created_at)"
+                " VALUES (?, ?, ?)",
+                (key, text, time.time()),
             )

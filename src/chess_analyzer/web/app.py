@@ -6,6 +6,7 @@ Run it with ``chess-analyzer-web`` or
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import mimetypes
 import re
@@ -429,6 +430,36 @@ def create_app(
             if (record := game_record(result, username, job_id))
         ]
         return {"username": username, **player_stats(records)}
+
+    @app.get(
+        "/api/players/{username}/weaknesses/coach",
+        dependencies=[Depends(require_access)],
+    )
+    def coach_weaknesses(username: str) -> dict:
+        """A language model's advice on the player's recurring weaknesses.
+
+        ``text`` is ``None`` when no model is configured, there are no
+        weaknesses or the model's answer was rejected. Answers are stored by
+        the weaknesses they word, so they are asked once until those change.
+        """
+        if coach is None:
+            return {"text": None}
+        records = [
+            record
+            for job_id, result in app.state.store.results_for_player(username)
+            if (record := game_record(result, username, job_id))
+        ]
+        weaknesses = player_stats(records)["weaknesses"]
+        if not weaknesses:
+            return {"text": None}
+        source = "\n".join(f"{w['title']}. {w['text']}" for w in weaknesses)
+        key = "weaknesses:" + hashlib.sha256(source.encode()).hexdigest()
+        text = app.state.store.coach_text(key)
+        if text is None:
+            text = coach.reword_weaknesses(weaknesses)
+            if text:
+                app.state.store.save_coach_text(key, text)
+        return {"text": text}
 
     @app.get("/api/players/{username}/puzzles", dependencies=[Depends(require_access)])
     def player_puzzles(

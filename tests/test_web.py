@@ -391,3 +391,43 @@ def test_move_explanations(tmp_path, scholars_mate_pgn):
 
         assert client.get(f"{url}/99").status_code == 404
         assert client.get("/api/analyses/nope/explanations/1").status_code == 404
+
+
+def test_coach_on_weaknesses(tmp_path):
+    from test_weaknesses import game
+
+    endgame_tactics = [
+        (41, "endgame", "missed_tactic"),
+        (43, "endgame", "missed_tactic"),
+    ]
+    games = [game(f"2026.10.0{i}", errors=endgame_tactics) for i in range(1, 4)]
+    coach = MagicMock()
+    coach.reword_weaknesses.return_value = "Practise endgame tactics first."
+    app = create_app(
+        Settings(data_dir=tmp_path),
+        engine_factory=lambda: QuittableEngine(EVALS),
+        opening_factory=lambda: None,
+        chesscom=MagicMock(),
+        lichess=MagicMock(),
+        coach=coach,
+    )
+    with TestClient(app) as client:
+        url = "/api/players/alice/weaknesses/coach"
+        # Without analysed games there is nothing to word.
+        assert client.get(url).json() == {"text": None}
+
+        app.state.store.results_for_player = lambda name: [
+            (str(i), g) for i, g in enumerate(games)
+        ]
+        stats = client.get("/api/players/alice/stats").json()
+        assert stats["weaknesses"][0]["title"] == "You miss tactics in the endgame"
+        assert client.get(url).json() == {"text": "Practise endgame tactics first."}
+        # The answer is stored: the model is asked once.
+        client.get(url)
+        assert coach.reword_weaknesses.call_count == 1
+        assert coach.reword_weaknesses.call_args.args[0] == stats["weaknesses"]
+
+    with make_client(tmp_path) as client:
+        assert client.get("/api/players/alice/weaknesses/coach").json() == {
+            "text": None
+        }
