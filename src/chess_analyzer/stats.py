@@ -20,6 +20,7 @@ from chess_analyzer.insights import (
     TIME_TROUBLE,
     WASTED_TIME,
 )
+from chess_analyzer.plans import MISSED, PLAYED, UNSOUND, check_plans
 from chess_analyzer.puzzles import candidates
 
 # A trend needs at least this many games, and the average centipawn loss of
@@ -43,6 +44,10 @@ MIN_CRITICAL = 5
 MAX_PUZZLES = 10
 # The most moves to list for each kind of mistake.
 MAX_EXAMPLES = 20
+# A pawn break is named in the advice once it applied in this many games, and
+# its score difference once there are this many games with and without it.
+MIN_PLAN_GAMES = 2
+PLAN_SCORE_GAP = 0.25
 # Words that end the name of an opening family, as in "Sicilian Defense
 # Najdorf Variation".
 FAMILY_WORDS = ("Defense", "Defence", "Game", "Opening", "Gambit", "Attack", "System")
@@ -157,6 +162,7 @@ def game_record(
         "critical": critical,
         "puzzles": candidates(result, color),
         "errors": errors,
+        "plans": check_plans(opening.get("name"), color, moves),
     }
 
 
@@ -181,6 +187,35 @@ def _trend(acpls: list[int]) -> dict | None:
     }
 
 
+def _score(results: list[str]) -> float | None:
+    if not results:
+        return None
+    return (results.count("win") + 0.5 * results.count("draw")) / len(results)
+
+
+def _plans(games: list[dict]) -> list[dict]:
+    """Count how often each pawn break of an opening was carried out."""
+    plans: dict[str, dict] = {}
+    for g in games:
+        for check in g.get("plans") or []:
+            plan = plans.setdefault(
+                check["name"],
+                {"name": check["name"], "goal": check["goal"], "games": 0}
+                | {PLAYED: 0, UNSOUND: 0, MISSED: 0, "with": [], "without": []},
+            )
+            plan["games"] += 1
+            if check["status"] in plan:
+                plan[check["status"]] += 1
+            if g["result"]:
+                carried_out = check["status"] in (PLAYED, UNSOUND)
+                plan["with" if carried_out else "without"].append(g["result"])
+    for plan in plans.values():
+        with_, without = plan.pop("with"), plan.pop("without")
+        plan["score_with"], plan["games_with"] = _score(with_), len(with_)
+        plan["score_without"], plan["games_without"] = _score(without), len(without)
+    return list(plans.values())
+
+
 def _openings(records: list[dict]) -> list[dict]:
     groups: dict[tuple[str, str], list[dict]] = {}
     for r in records:
@@ -190,12 +225,7 @@ def _openings(records: list[dict]) -> list[dict]:
     openings = []
     for (name, color), games in groups.items():
         left = [g["left_book"] for g in games if g["left_book"] is not None]
-        results = [g["result"] for g in games if g["result"]]
-        score = (
-            (results.count("win") + 0.5 * results.count("draw")) / len(results)
-            if results
-            else None
-        )
+        score = _score([g["result"] for g in games if g["result"]])
         average = sum(left) / len(left) if left else None
         if average is None:
             advice = None
@@ -218,12 +248,19 @@ def _openings(records: list[dict]) -> list[dict]:
                 "score": score,
                 "acpl": round(sum(g["acpl"] for g in games) / len(games)),
                 "advice": advice,
+                "plans": _plans(games),
                 # Newest first, to open each game where it left book.
                 "game_list": [
                     {
                         k: g.get(k)
                         for k in ("id", "date", "opponent", "result", "acpl")
                         + ("left_book", "left_book_ply")
+                    }
+                    | {
+                        "plans": [
+                            {k: p[k] for k in ("name", "status", "ply", "label")}
+                            for p in g.get("plans") or []
+                        ]
                     }
                     for g in reversed(games)
                 ],
@@ -332,19 +369,55 @@ def _insights(stats: dict) -> list[str]:
         )
 
     for opening in stats["openings"]:
+        side = f"{opening['name']} as {opening['color']}"
+        lines += _plan_insights(opening, side)
         if opening["you_left"] < 2 or opening["advice"] is None:
             continue
-        side = f"{opening['name']} as {opening['color']}"
         if opening["advice"] == "study":
             lines.append(
                 f"You leave book early in the {side} (move "
                 f"{opening['left_book']:g} on average): study this opening."
             )
         else:
+            breaks = " and ".join(p["name"] for p in opening.get("plans", []))
             lines.append(
                 f"You know the {side} well (book until move "
                 f"{opening['left_book']:g} on average): study its typical "
-                "middlegame plans and pawn structures instead."
+                "middlegame plans and pawn structures instead"
+                + (f", such as the {breaks} breaks." if breaks else ".")
+            )
+    return lines
+
+
+def _plan_insights(opening: dict, side: str) -> list[str]:
+    """Name the pawn breaks the player keeps missing, or that win them games."""
+    lines = []
+    for plan in opening.get("plans", []):
+        if plan["games"] < MIN_PLAN_GAMES:
+            continue
+        name = plan["name"]
+        if plan[MISSED] >= MIN_PLAN_GAMES and plan[MISSED] / plan["games"] >= 0.5:
+            lines.append(
+                f"In the {side}, the engine wanted the {name} break in "
+                f"{plan[MISSED]} of your {plan['games']} games but you never "
+                f"played it. Its purpose is to {plan['goal']}: learn when it "
+                "works instead of more opening moves."
+            )
+        elif plan[UNSOUND] >= MIN_PLAN_GAMES:
+            lines.append(
+                f"In the {side}, your {name} break was a mistake in "
+                f"{plan[UNSOUND]} of {plan['games']} games: prepare it before "
+                "playing it."
+            )
+        with_, without = plan["score_with"], plan["score_without"]
+        if (
+            plan["games_with"] >= MIN_PLAN_GAMES
+            and plan["games_without"] >= MIN_PLAN_GAMES
+            and with_ - without >= PLAN_SCORE_GAP
+        ):
+            lines.append(
+                f"In the {side}, you score {with_:.0%} when you play {name} "
+                f"and {without:.0%} when you don't."
             )
     return lines
 
@@ -402,7 +475,7 @@ def player_stats(records: list[dict]) -> dict:
     -------
     dict
         ``games`` (oldest first, for the trendline), ``acpl``, ``trend``,
-        ``openings`` (each with its games), ``categories``,
+        ``openings`` (each with its games and pawn breaks), ``categories``,
         ``category_moves`` (the moves of each kind of mistake), ``phases``, ``time``, ``critical``
         (how many critical moments the player met and found), ``puzzles``
         (critical moments from the most recent games, newest first) and

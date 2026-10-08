@@ -8,6 +8,7 @@ import chess.pgn
 from chess_analyzer.engine import CLASSIFICATIONS, GameAnalysis, MoveAnalysis
 from chess_analyzer.openings import OpeningDeviation
 from chess_analyzer.parse import opening_name
+from chess_analyzer.plans import check_plans
 
 HEADERS = (
     "Event",
@@ -25,6 +26,9 @@ HEADERS = (
     "ECO",
     "Link",
 )
+
+
+SIDES = ("white", "black")
 
 
 def _side(color: chess.Color) -> str:
@@ -107,6 +111,8 @@ def result_to_dict(
     engine_label: str,
     engine_name: str | None = None,
 ) -> dict:
+    moves = [move_to_dict(m) for m in analysis.moves]
+    name = opening_name(game)
     return {
         "headers": {k: game.headers[k] for k in HEADERS if k in game.headers},
         "start_fen": game.board().fen(),
@@ -114,12 +120,13 @@ def result_to_dict(
         "engine_name": engine_name,
         "positions": dict(analysis.sources),
         "opening": {
-            "name": opening_name(game),
+            "name": name,
             "checked": opening_checked,
             "error": opening_error,
             "deviation": deviation_to_dict(deviation),
+            "plans": {side: check_plans(name, side, moves) for side in SIDES},
         },
-        "moves": [move_to_dict(m) for m in analysis.moves],
+        "moves": moves,
         "summary": {
             "white": summary_to_dict(analysis, chess.WHITE),
             "black": summary_to_dict(analysis, chess.BLACK),
