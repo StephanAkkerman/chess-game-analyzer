@@ -100,6 +100,18 @@ function formatEval(cp, source) {
   return `${pawns >= 0 ? "+" : ""}${pawns.toFixed(1)}`;
 }
 
+// Short, unsigned label for the evaluation bar: the side it sits on shows who is ahead.
+function evalBarLabel(cp, source) {
+  if (cp === null || cp === undefined) return "";
+  if (source === "tablebase") return cp ? "TB" : "½";
+  if (Math.abs(cp) >= MATE - 500) {
+    const moves = MATE - Math.abs(cp);
+    return moves ? `M${moves}` : cp > 0 ? "1-0" : "0-1";
+  }
+  const pawns = Math.abs(cp) / 100;
+  return pawns >= 10 ? String(Math.round(pawns)) : pawns.toFixed(1);
+}
+
 // Lichess' win-probability curve: maps centipawns to -1..1.
 function winChance(cp) {
   if (cp === null || cp === undefined) return 0;
@@ -1226,8 +1238,14 @@ class AnalysisView {
   }
 
   renderEvalBar() {
-    const white = 50 + 50 * winChance(this.evalAt(this.ply));
+    const cp = this.evalAt(this.ply);
+    const source = this.sourceAt(this.ply);
+    const white = 50 + 50 * winChance(cp);
     document.getElementById("evalbar-white").style.height = `${white}%`;
+    const label = document.getElementById("evalbar-label");
+    label.textContent = evalBarLabel(cp, source);
+    label.classList.toggle("black", cp !== null && cp !== undefined && cp < 0);
+    document.getElementById("evalbar").title = cp === null || cp === undefined ? "" : formatEval(cp, source);
   }
 
   renderMoveInfo() {
