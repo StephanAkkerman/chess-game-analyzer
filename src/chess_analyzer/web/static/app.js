@@ -1460,7 +1460,7 @@ class AnalysisView {
     if (!move) {
       box.replaceChildren(
         el("div", { class: "headline" }, el("span", { class: "move", text: "Start" })),
-        el("p", { class: "muted", text: "Use the arrows, swipe the board or tap a move." }),
+        el("p", { class: "muted", text: "Use the arrows, drag the board sideways or tap a move." }),
       );
       return;
     }
@@ -1941,15 +1941,27 @@ class AnalysisView {
     };
     document.addEventListener("keydown", onKey);
 
-    // Swipe the board to step through moves.
-    let startX = null;
-    this.board.addEventListener("pointerdown", (e) => (startX = e.clientX));
-    this.board.addEventListener("pointerup", (e) => {
-      if (startX === null) return;
-      const dx = e.clientX - startX;
-      startX = null;
-      if (Math.abs(dx) > 30) (dx < 0 ? actions.next : actions.prev)();
+    // Drag the board sideways to step through moves, like the move list reads:
+    // to the right goes forward, to the left goes back. Every 40px is one
+    // move, so a long drag scrubs through several of them.
+    const STEP_PX = 40;
+    let dragX = null;
+    this.board.addEventListener("pointerdown", (e) => {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      dragX = e.clientX;
+      this.board.setPointerCapture(e.pointerId);
     });
+    this.board.addEventListener("pointermove", (e) => {
+      if (dragX === null) return;
+      const steps = Math.trunc((e.clientX - dragX) / STEP_PX);
+      if (!steps) return;
+      dragX += steps * STEP_PX;
+      const ply = Math.max(0, Math.min(this.moves.length, this.ply + steps));
+      if (ply !== this.ply) this.go(ply);
+    });
+    const endDrag = () => (dragX = null);
+    this.board.addEventListener("pointerup", endDrag);
+    this.board.addEventListener("pointercancel", endDrag);
 
     // Tap or drag on the graph to scrub through the game.
     const graph = document.getElementById("graph");
