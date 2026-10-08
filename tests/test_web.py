@@ -356,3 +356,38 @@ def test_peer_comparison(tmp_path, scholars_mate_pgn):
     assert blunders["peers"]["n"] > 0 and blunders["you"] is None
     # Samples of stronger players are kept apart.
     assert higher["sample"] is None
+
+
+def test_move_explanations(tmp_path, scholars_mate_pgn):
+    coach = MagicMock()
+    coach.reword.return_value = "Nf6 lets the queen take f7 with mate."
+    app = create_app(
+        Settings(data_dir=tmp_path),
+        engine_factory=lambda: QuittableEngine(EVALS),
+        opening_factory=lambda: None,
+        chesscom=MagicMock(),
+        lichess=MagicMock(),
+        coach=coach,
+    )
+    with TestClient(app) as client:
+        assert client.get("/api/config").json()["coach"] is True
+        job_id = client.post("/api/analyses", json={"pgn": scholars_mate_pgn}).json()[
+            "id"
+        ]
+        wait_for(client, job_id)
+        url = f"/api/analyses/{job_id}/explanations"
+
+        plain = client.get(f"{url}/6").json()
+        assert plain["coach"] is False
+        assert plain["text"].startswith("3...Nf6 is a blunder")
+        assert "Better was g6" in plain["text"]
+        assert "g6" not in client.get(f"{url}/6?hide_best=true").json()["text"]
+
+        worded = client.get(f"{url}/6?coach=true").json()
+        assert worded == {**plain, "text": coach.reword.return_value, "coach": True}
+        # The coach's answer is stored: the model is asked once.
+        client.get(f"{url}/6?coach=true")
+        assert coach.reword.call_count == 1
+
+        assert client.get(f"{url}/99").status_code == 404
+        assert client.get("/api/analyses/nope/explanations/1").status_code == 404

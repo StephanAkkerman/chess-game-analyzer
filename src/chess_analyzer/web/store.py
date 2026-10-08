@@ -39,6 +39,14 @@ CREATE TABLE IF NOT EXISTS peer_samples (
     created_at REAL NOT NULL,
     PRIMARY KEY (username, time_control, rating_offset)
 );
+CREATE TABLE IF NOT EXISTS explanations (
+    job_id TEXT NOT NULL,
+    ply INTEGER NOT NULL,
+    hide_best INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (job_id, ply, hide_best)
+);
 """
 
 QUEUED, RUNNING, DONE, FAILED = "queued", "running", "done", "failed"
@@ -265,4 +273,24 @@ class Store:
                 "INSERT OR REPLACE INTO puzzle_reviews (username, key, data,"
                 " updated_at) VALUES (?, ?, ?, ?)",
                 (username.lower(), key, json.dumps(data), time.time()),
+            )
+
+    def explanation(self, job_id: str, ply: int, hide_best: bool) -> str | None:
+        """The coach's explanation of a move, if it was made before."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT text FROM explanations WHERE job_id = ? AND ply = ?"
+                " AND hide_best = ?",
+                (job_id, ply, int(hide_best)),
+            ).fetchone()
+        return row["text"] if row else None
+
+    def save_explanation(
+        self, job_id: str, ply: int, hide_best: bool, text: str
+    ) -> None:
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT OR REPLACE INTO explanations (job_id, ply, hide_best, text,"
+                " created_at) VALUES (?, ?, ?, ?, ?)",
+                (job_id, ply, int(hide_best), text, time.time()),
             )

@@ -1264,6 +1264,13 @@ class AnalysisView {
     this.hover = null;
     // Whether to always draw the engine's best move in the shown position.
     this.engineArrow = store.get("engineArrow", false);
+    // Explanations by move, whether the best move is hidden and whether the
+    // coach worded them, as promises of the API's answer.
+    this.explanations = new Map();
+    // Whether the server has a language model to reword explanations, and
+    // whether the user asked for it.
+    this.coach = false;
+    this.useCoach = store.get("useCoach", false);
     const h = result.headers;
     const me = store.get("username", "");
     this.me = sameName(h.White, me) ? "white" : sameName(h.Black, me) ? "black" : null;
@@ -1625,6 +1632,7 @@ class AnalysisView {
         ),
       );
     }
+    children.push(this.explanation(move));
     if (move.time_spent !== null && move.time_spent !== undefined) {
       const clock = `Took ${formatSeconds(move.time_spent)}, ${formatSeconds(move.clock)} left.`;
       children.push(
@@ -1640,6 +1648,66 @@ class AnalysisView {
       children.push(el("p", { class: "muted small", text: "Exact result from the endgame tablebase." }));
     }
     box.replaceChildren(...children);
+  }
+
+  // Why the move is good or bad, in words. The server works it out from the
+  // position; a language model can reword it if the server has one.
+  explanation(move) {
+    const hide = this.hidesBest(move);
+    const box = el("div", { class: "explain" });
+    const load = async (coach) => {
+      const key = `${move.ply}:${hide}:${coach}`;
+      if (!this.explanations.has(key)) {
+        const path = `/api/analyses/${encodeURIComponent(this.id)}/explanations/${move.ply}`;
+        this.explanations.set(key, api(`${path}?hide_best=${hide}&coach=${coach}`));
+        if (coach) box.replaceChildren(el("p", { class: "muted small", text: "The coach is thinking…" }));
+      }
+      let data;
+      try {
+        data = await this.explanations.get(key);
+      } catch {
+        this.explanations.delete(key);
+        box.replaceChildren();
+        return;
+      }
+      if (!data.text) return box.replaceChildren();
+      const children = [el("p", {}, el("strong", { text: data.coach ? "Coach. " : "Why. " }), data.text)];
+      if (coach && !data.coach) {
+        children.push(el("p", { class: "muted small", text: "The coach is not available right now." }));
+      } else if (this.coach && !coach) {
+        children.push(
+          el("button", {
+            type: "button",
+            class: "link",
+            text: "Ask the coach",
+            onclick: () => {
+              this.useCoach = true;
+              store.set("useCoach", true);
+              load(true);
+            },
+          }),
+        );
+      } else if (data.coach) {
+        children.push(
+          el("button", {
+            type: "button",
+            class: "link",
+            text: "Show the plain explanation",
+            onclick: () => {
+              this.useCoach = false;
+              store.set("useCoach", false);
+              load(false);
+            },
+          }),
+        );
+      }
+      box.replaceChildren(...children);
+    };
+    getConfig().then((config) => {
+      this.coach = Boolean(config.coach);
+      load(this.coach && this.useCoach);
+    });
+    return box;
   }
 
   criticalNote(move, hidden = false) {

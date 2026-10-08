@@ -416,6 +416,8 @@ dialog input { width: 100%; margin: 8px 0; }
 }
 .eval { font-variant-numeric: tabular-nums; font-weight: 700; }
 .move-info .actions { margin-top: 10px; }
+.move-info .explain { margin-top: 8px; }
+.move-info .explain p { margin: 0 0 4px; }
 
 /* Eval graph */
 .graph { display: block; width: 100%; height: 120px; touch-action: pan-y; cursor: pointer; }
