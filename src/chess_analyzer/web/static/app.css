@@ -284,7 +284,7 @@ dialog input { width: 100%; margin: 8px 0; }
 
 .evalbar {
   position: relative;
-  width: 14px;
+  width: 24px;
   flex: none;
   border-radius: 4px;
   overflow: hidden;
@@ -301,6 +301,24 @@ dialog input { width: 100%; margin: 8px 0; }
   transition: height 0.25s ease;
 }
 .evalbar.flipped .evalbar-white { bottom: auto; top: 0; }
+/* Score sits at the end of the side that is ahead, like Chess.com. */
+.evalbar-label {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 3px;
+  text-align: center;
+  font-size: 9px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  color: var(--eval-black);
+  pointer-events: none;
+}
+.evalbar-label.black { bottom: auto; top: 3px; color: var(--eval-white); }
+.evalbar.flipped .evalbar-label { bottom: auto; top: 3px; }
+.evalbar.flipped .evalbar-label.black { top: auto; bottom: 3px; }
 
 .board {
   position: relative;
@@ -570,6 +588,13 @@ button.link.opening-name { text-align: left; text-decoration: none; color: var(-
 .openings .piece-dot { margin-right: 6px; }
 .advice-study { color: var(--serious); font-weight: 600; }
 .advice-middlegame { color: var(--good); font-weight: 600; }
+.block { display: block; }
+.plans { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 8px; font-size: 0.9rem; }
+.plans li { display: grid; grid-template-columns: 4em 1fr; gap: 10px; }
+.plans .san { font-weight: 700; }
+.plan-played { color: var(--good); }
+.plan-unsound, .plan-missed { color: var(--serious); }
+.plan-not_played { color: var(--muted); }
 .time-flag { color: var(--serious); font-weight: 600; }
 
 .peer-table td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }

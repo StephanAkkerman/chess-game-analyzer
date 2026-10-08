@@ -100,6 +100,18 @@ function formatEval(cp, source) {
   return `${pawns >= 0 ? "+" : ""}${pawns.toFixed(1)}`;
 }
 
+// Short, unsigned label for the evaluation bar: the side it sits on shows who is ahead.
+function evalBarLabel(cp, source) {
+  if (cp === null || cp === undefined) return "";
+  if (source === "tablebase") return cp ? "TB" : "½";
+  if (Math.abs(cp) >= MATE - 500) {
+    const moves = MATE - Math.abs(cp);
+    return moves ? `M${moves}` : cp > 0 ? "1-0" : "0-1";
+  }
+  const pawns = Math.abs(cp) / 100;
+  return pawns >= 10 ? String(Math.round(pawns)) : pawns.toFixed(1);
+}
+
 // Lichess' win-probability curve: maps centipawns to -1..1.
 function winChance(cp) {
   if (cp === null || cp === undefined) return 0;
@@ -992,6 +1004,33 @@ function errorMoveList(moves, count) {
   );
 }
 
+function planStatusText(p) {
+  return {
+    played: p.late ? "played, later than the engine wanted" : "played",
+    unsound: "played, but it was a mistake",
+    missed: "missed: the engine wanted it",
+    not_played: "did not come up",
+  }[p.status];
+}
+
+// "...c5 3/5 · ...f6 1/5": how often each pawn break was carried out.
+function planSummary(o) {
+  if (!o.plans?.length) return null;
+  return el(
+    "span",
+    { class: "muted small block" },
+    "Breaks: ",
+    ...o.plans.flatMap((p, i) => [
+      i ? " · " : "",
+      el("span", {
+        class: p.missed > p.played + p.unsound ? "plan-missed" : null,
+        title: `${p.name}: ${p.goal}. Played in ${p.played + p.unsound} of ${p.games} games, missed in ${p.missed}.`,
+        text: `${p.name} ${p.played + p.unsound}/${p.games}`,
+      }),
+    ]),
+  );
+}
+
 // A row per opening, and a hidden row with its games that the name toggles.
 function openingRows(o) {
   const games = o.game_list || [];
@@ -1022,10 +1061,14 @@ function openingRows(o) {
                 ` vs ${g.opponent || "?"}`,
                 g.date ? el("span", { class: "muted", text: ` · ${g.date}` }) : null,
               ),
-              el("span", {
-                class: "muted",
-                text: g.left_book ? `left book on move ${g.left_book}` : "stayed in book",
-              }),
+              el(
+                "span",
+                { class: "muted" },
+                g.left_book ? `left book on move ${g.left_book}` : "stayed in book",
+                ...(g.plans || [])
+                  .filter((p) => p.status !== "not_played")
+                  .map((p) => el("span", { class: `block plan-${p.status}`, text: `${p.name} ${p.status === "missed" ? "missed" : "played"}` })),
+              ),
             ),
           ),
         ),
@@ -1049,7 +1092,7 @@ function openingRows(o) {
   const row = el(
     "tr",
     {},
-    el("td", {}, games.length ? toggle : [el("span", { class: `piece-dot ${o.color}` }), o.name]),
+    el("td", {}, ...(games.length ? [toggle] : [el("span", { class: `piece-dot ${o.color}` }), o.name]), planSummary(o)),
     el("td", { text: String(o.games) }),
     el("td", {
       text: o.left_book === null ? "–" : `move ${o.left_book}`,
@@ -1422,8 +1465,14 @@ class AnalysisView {
   }
 
   renderEvalBar() {
-    const white = 50 + 50 * winChance(this.evalAt(this.ply));
+    const cp = this.evalAt(this.ply);
+    const source = this.sourceAt(this.ply);
+    const white = 50 + 50 * winChance(cp);
     document.getElementById("evalbar-white").style.height = `${white}%`;
+    const label = document.getElementById("evalbar-label");
+    label.textContent = evalBarLabel(cp, source);
+    label.classList.toggle("black", cp !== null && cp !== undefined && cp < 0);
+    document.getElementById("evalbar").title = cp === null || cp === undefined ? "" : formatEval(cp, source);
   }
 
   renderMoveInfo() {
@@ -1847,7 +1896,40 @@ class AnalysisView {
         children.push(el("p", { class: "muted", text: "The position was not in the book at all." }));
       }
     }
+    children.push(...this.planBlocks(opening.plans));
     box.replaceChildren(...children);
+  }
+
+  // The opening's typical pawn breaks and whether each side carried them out.
+  planBlocks(plans) {
+    if (!plans) return [];
+    const sides = (this.me ? [this.me] : ["white", "black"]).filter((c) => plans[c]?.length);
+    return sides.flatMap((color) => {
+      const who = this.sideLabel(color);
+      return [
+        el("p", { class: "small", text: `${who === "You" ? "Your" : `${who}'s`} pawn breaks in this opening:` }),
+        el(
+          "ul",
+          { class: "plans" },
+          ...plans[color].map((p) =>
+            el(
+              "li",
+              {},
+              el("span", { class: "san", text: p.name }),
+              el(
+                "span",
+                {},
+                el("span", { class: `plan-${p.status}`, text: planStatusText(p) }),
+                p.ply ? " (" : "",
+                p.ply ? el("button", { type: "button", class: "link", text: p.label, onclick: () => this.go(p.ply) }) : null,
+                p.ply ? ")" : "",
+                el("span", { class: "muted small block", text: `Goal: ${p.goal}.` }),
+              ),
+            ),
+          ),
+        ),
+      ];
+    });
   }
 
   renderMeta() {
