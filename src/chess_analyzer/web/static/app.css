@@ -419,6 +419,13 @@ dialog input { width: 100%; margin: 8px 0; }
 .move-info .explain { margin-top: 8px; }
 .move-info .explain p { margin: 0 0 4px; }
 
+/* Key takeaway */
+.takeaways { display: grid; gap: 12px; }
+.takeaway-box p { margin: 0 0 6px; }
+.takeaway-title { display: flex; align-items: center; gap: 6px; }
+.takeaway-box .advice { color: var(--muted); }
+.move-info .takeaways { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+
 /* Eval graph */
 .graph { display: block; width: 100%; height: 120px; touch-action: pan-y; cursor: pointer; }
 .graph .zero { stroke: var(--border); stroke-width: 1; }
