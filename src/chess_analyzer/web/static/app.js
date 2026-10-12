@@ -1349,6 +1349,9 @@ class AnalysisView {
     // Explanations by move, whether the best move is hidden and whether the
     // coach worded them, as promises of the API's answer.
     this.explanations = new Map();
+    // Each side's takeaway, by whether the better move is hidden, as
+    // promises of the API's answer.
+    this.takeaways = new Map();
     // Whether the server has a language model to reword explanations, and
     // whether the user asked for it.
     this.coach = false;
@@ -1367,6 +1370,7 @@ class AnalysisView {
     this.board = document.getElementById("board");
     this.renderPlayers();
     this.renderMoveList();
+    this.renderTakeaway();
     this.renderSummary();
     this.renderOpening();
     this.renderMeta();
@@ -1662,6 +1666,7 @@ class AnalysisView {
             onclick: () => {
               this.revealed.add(move.ply);
               this.renderMoveInfo();
+              this.renderTakeaway();
             },
           }),
         ),
@@ -1715,6 +1720,8 @@ class AnalysisView {
       );
     }
     children.push(this.explanation(move));
+    // After the last move, the game's lesson.
+    if (this.ply === this.moves.length) children.push(this.takeawayBoxes(true));
     if (move.time_spent !== null && move.time_spent !== undefined) {
       const clock = `Took ${formatSeconds(move.time_spent)}, ${formatSeconds(move.clock)} left.`;
       children.push(
@@ -1789,6 +1796,76 @@ class AnalysisView {
       this.coach = Boolean(config.coach);
       load(this.coach && this.useCoach);
     });
+    return box;
+  }
+
+  renderTakeaway() {
+    document.getElementById("takeaway").replaceChildren(this.takeawayBoxes());
+  }
+
+  // The lesson of the game for the user, or for both sides when the user
+  // played neither. `compact` leaves out the jump to the move, for the move
+  // panel at the end of the game.
+  takeawayBoxes(compact = false) {
+    const colors = this.me ? [this.me] : ["white", "black"];
+    return el("div", { class: "takeaways" }, ...colors.map((color) => this.takeawayBox(color, compact)));
+  }
+
+  // The takeaway of `color` and its turning point, if any. A turning point
+  // the user has not seen the answer to yet is asked for again without the
+  // better move, so they can work it out first.
+  async loadTakeaway(color) {
+    const fetch = (hide) => {
+      const key = `${color}:${hide}`;
+      if (!this.takeaways.has(key)) {
+        const path = `/api/analyses/${encodeURIComponent(this.id)}/takeaway`;
+        const request = api(`${path}?color=${color}&hide_best=${hide}`);
+        request.catch(() => this.takeaways.delete(key));
+        this.takeaways.set(key, request);
+      }
+      return this.takeaways.get(key);
+    };
+    const full = await fetch(false);
+    const move = full.ply ? this.moves[full.ply - 1] : null;
+    const hidden = Boolean(move && this.hidesBest(move));
+    return { data: hidden ? await fetch(true) : full, move, hidden };
+  }
+
+  takeawayBox(color, compact) {
+    const box = el("div", { class: "takeaway-box" });
+    this.loadTakeaway(color).then(
+      ({ data, move, hidden }) => {
+        const who = this.me ? null : el("span", { class: `piece-dot ${color}` });
+        const children = [
+          el("p", { class: "takeaway-title" }, who, el("strong", { text: data.title })),
+          el("p", { text: data.text }),
+        ];
+        if (data.advice) children.push(el("p", { class: "advice", text: data.advice }));
+        const actions = [];
+        if (move && !compact) {
+          actions.push(el("button", { type: "button", text: `Go to ${move.label}`, onclick: () => this.go(move.ply) }));
+        }
+        if (move && this.me === color) {
+          actions.push(el("button", { type: "button", text: "Try it as a puzzle", onclick: () => this.startPuzzle(move) }));
+        }
+        if (hidden) {
+          actions.push(
+            el("button", {
+              type: "button",
+              text: "Show the answer",
+              onclick: () => {
+                this.revealed.add(move.ply);
+                this.renderTakeaway();
+                this.renderMoveInfo();
+              },
+            }),
+          );
+        }
+        if (actions.length) children.push(el("div", { class: "actions row" }, ...actions));
+        box.replaceChildren(...children);
+      },
+      () => box.replaceChildren(el("p", { class: "muted small", text: "The takeaway could not be loaded." })),
+    );
     return box;
   }
 

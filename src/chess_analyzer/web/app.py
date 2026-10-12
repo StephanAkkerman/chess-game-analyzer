@@ -16,7 +16,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import chess
 import chess.svg
@@ -44,6 +44,7 @@ from chess_analyzer.peers import (
 )
 from chess_analyzer.puzzles import build_puzzle, daily_set, review
 from chess_analyzer.stats import game_record, player_stats
+from chess_analyzer.takeaway import game_takeaway
 from chess_analyzer.web.device import InvalidEvaluation, find_device_engine
 from chess_analyzer.web.service import (
     AnalysisService,
@@ -597,6 +598,23 @@ def create_app(
                 explanation["text"] = text
                 explanation["coach"] = True
         return explanation
+
+    @app.get("/api/analyses/{job_id}/takeaway")
+    def takeaway(
+        job_id: str,
+        color: Literal["white", "black"],
+        hide_best: bool = False,
+    ) -> dict:
+        """The key lesson of a finished analysis for ``color``.
+
+        That is the move that turned the game with the move that would have
+        kept it, or what went well when there was no mistake. With
+        ``hide_best`` the better move is left out.
+        """
+        job = app.state.store.get(job_id)
+        if job is None or job.status != DONE:
+            raise HTTPException(404, "Analysis not found.")
+        return game_takeaway(job.result, color, hide_best=hide_best)
 
     @app.get("/api/pieces/{name}.svg")
     def piece(name: str) -> Response:

@@ -393,6 +393,26 @@ def test_move_explanations(tmp_path, scholars_mate_pgn):
         assert client.get("/api/analyses/nope/explanations/1").status_code == 404
 
 
+def test_takeaway(tmp_path, scholars_mate_pgn):
+    with make_client(tmp_path) as client:
+        job_id = client.post("/api/analyses", json={"pgn": scholars_mate_pgn}).json()[
+            "id"
+        ]
+        wait_for(client, job_id)
+        url = f"/api/analyses/{job_id}/takeaway"
+        black = client.get(f"{url}?color=black").json()
+        assert black["kind"] == "turning_point"
+        assert black["outcome"] == "lost"
+        assert black["ply"] == 6
+        assert "Better was g6" in black["text"]
+        assert (
+            "g6" not in client.get(f"{url}?color=black&hide_best=true").json()["text"]
+        )
+        assert client.get(f"{url}?color=white").json()["outcome"] == "won"
+        assert client.get(f"{url}?color=red").status_code == 422
+        assert client.get("/api/analyses/nope/takeaway?color=white").status_code == 404
+
+
 def test_coach_on_weaknesses(tmp_path):
     from test_weaknesses import game
 
