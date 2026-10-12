@@ -8,7 +8,10 @@ move of an analysed game it works out concrete facts with python-chess:
   leaves hanging;
 - for a mistake, what the opponent's best reply does to punish it;
 - what the engine's best move would have done instead, and where its line
-  ends up in material.
+  ends up in material;
+- for a mistake that runs into a tactic (a fork, pin, skewer, mate, or a piece
+  that can be taken), how to avoid it next time: which move allowed it, this
+  one or an earlier one, and what to look out for.
 
 The facts are joined into a short explanation with fixed sentence patterns,
 so it never says anything the board doesn't show and needs no model. A
@@ -58,6 +61,7 @@ PUNISHING = (
     "promotes",
     "check",
     "fork",
+    "skewer",
     "threat",
     "pressure",
     "pin",
@@ -157,6 +161,61 @@ def _targets(board: chess.Board, square: chess.Square) -> list[chess.Square]:
         ):
             found.append(target)
     return found
+
+
+def skewer(
+    board: chess.Board, square: chess.Square
+) -> tuple[chess.Square, chess.Square] | None:
+    """The skewer the long-range piece on ``square`` makes, if any.
+
+    That is an attack on a valuable piece (the front one) that has to move
+    away and leaves the piece behind it on the same line to be taken.
+    Returns the squares of the front and the back piece.
+    """
+    piece = board.piece_at(square)
+    if piece is None or piece.piece_type not in (chess.BISHOP, chess.ROOK, chess.QUEEN):
+        return None
+    value = PIECE_VALUES[piece.piece_type]
+    for front in board.attacks(square):
+        victim = board.piece_at(front)
+        if victim is None or victim.color == piece.color:
+            continue
+        if victim.piece_type == chess.PAWN:
+            continue
+        king = victim.piece_type == chess.KING
+        if not king and PIECE_VALUES[victim.piece_type] <= value:
+            continue
+        step_file = _sign(chess.square_file(front) - chess.square_file(square))
+        step_rank = _sign(chess.square_rank(front) - chess.square_rank(square))
+        file = chess.square_file(front) + step_file
+        rank = chess.square_rank(front) + step_rank
+        while 0 <= file < 8 and 0 <= rank < 8:
+            back = chess.square(file, rank)
+            behind = board.piece_at(back)
+            if behind is not None:
+                if (
+                    behind.color == victim.color
+                    and behind.piece_type not in (chess.PAWN, chess.KING)
+                    and (king or PIECE_VALUES[behind.piece_type] < value_of(victim))
+                    and (
+                        not board.attackers(behind.color, back)
+                        or PIECE_VALUES[behind.piece_type] > value
+                    )
+                ):
+                    return front, back
+                break
+            file += step_file
+            rank += step_rank
+    return None
+
+
+def _sign(n: int) -> int:
+    return (n > 0) - (n < 0)
+
+
+def value_of(piece: chess.Piece) -> int:
+    """The value of ``piece`` in pawns, counting the king as priceless."""
+    return 1_000 if piece.piece_type == chess.KING else PIECE_VALUES[piece.piece_type]
 
 
 def material(board: chess.Board, color: chess.Color) -> int:
@@ -259,6 +318,11 @@ def move_facts(
         ):
             add("pin", f"pins the {_piece(after, square)} to the king")
             break
+
+    skewered = skewer(after, move.to_square)
+    if skewered:
+        front, back = (_piece(after, s) for s in skewered)
+        add("skewer", f"skewers the {front} and the {back} behind it")
 
     if piece.piece_type in (chess.KNIGHT, chess.BISHOP):
         home = 0 if mover == chess.WHITE else 7
@@ -365,6 +429,299 @@ def line_outcome(
     return san, min(balances[-2:]) - start, position.is_checkmate()
 
 
+def _waiting(board: chess.Board) -> chess.Board | None:
+    """``board`` with the side to move passing, or ``None`` when in check."""
+    if board.is_check():
+        return None
+    waiting = board.copy(stack=False)
+    waiting.push(chess.Move.null())
+    return waiting
+
+
+def _threatens(board: chess.Board, reply: chess.Move, kind: str) -> bool:
+    """Whether ``reply`` is possible in ``board`` and does ``kind`` there."""
+    if reply not in board.legal_moves:
+        return False
+    return kind in [f.kind for f in move_facts(board, reply, REPLY)]
+
+
+def _back_rank(position: chess.Board, reply: chess.Move) -> bool:
+    """Whether ``reply`` mates a king stuck on its back rank."""
+    piece = position.piece_at(reply.from_square)
+    king = position.king(not piece.color) if piece else None
+    if king is None or piece.piece_type not in (chess.ROOK, chess.QUEEN):
+        return False
+    home = 0 if piece.color == chess.BLACK else 7
+    return chess.square_rank(king) == home == chess.square_rank(reply.to_square)
+
+
+def _guarded(board: chess.Board, square: chess.Square, frm: chess.Square) -> bool:
+    """Whether the piece on ``frm`` guards ``square`` in ``board``."""
+    return square in board.attacks(frm)
+
+
+def _tip(kind: str, position: chess.Board, reply: chess.Move) -> str:
+    """What to look out for to avoid ``kind`` of tactic, in general."""
+    attacker = position.piece_type_at(reply.from_square)
+    name = chess.piece_name(attacker) if attacker else "piece"
+    if kind == "mate" and _back_rank(position, reply):
+        return (
+            "Give your king an escape square, for instance by pushing one of "
+            "the pawns in front of it, before your back rank gets weak."
+        )
+    if kind == "mate":
+        return (
+            "Before every move, check your opponent's checks and threats "
+            "against your king, and keep defenders close to it."
+        )
+    if kind == "fork" and attacker == chess.KNIGHT:
+        return (
+            "Before every move, look at the squares your opponent's knights can "
+            "jump to, and don't leave two of your pieces, or a piece and your "
+            "king, a knight's jump away from the same square."
+        )
+    if kind == "fork" and attacker == chess.PAWN:
+        return (
+            "Watch for pawn pushes that attack two of your pieces at once, and "
+            "keep your pieces off squares side by side in front of enemy pawns."
+        )
+    if kind == "fork":
+        return (
+            f"Before every move, check whether the opponent's {name} can "
+            "attack two of your pieces at once, and keep your pieces protected."
+        )
+    if kind == "pin":
+        return (
+            f"Don't put a piece between your king and the opponent's {name} "
+            "on an open line: move the king off the line, or block it with a "
+            "protected piece, before the pin comes."
+        )
+    if kind == "skewer":
+        return (
+            "Keep your king and your valuable pieces off open lines the "
+            f"opponent's {name} can use, especially lined up one behind the other."
+        )
+    if kind == "wins":
+        return (
+            "Before each move, check which of your pieces it leaves undefended "
+            "and what your opponent can take."
+        )
+    return (
+        "Before each move, look for your opponent's checks, captures and "
+        "threats in reply."
+    )
+
+
+# What each kind of tactic is called, for saying when it became possible.
+TACTIC_NAMES = {
+    "mate": "the mate",
+    "fork": "the fork",
+    "skewer": "the skewer",
+    "pin": "the pin",
+}
+# Tactics to explain how to avoid, most serious first.
+TACTICS = ("mate", "fork", "skewer", "pin", "wins")
+
+
+def how_to_avoid(
+    move: dict,
+    previous: dict | None = None,
+    history: list[dict] | None = None,
+) -> dict | None:
+    """Explain how the player could have avoided the reply to a mistake.
+
+    For a move whose best reply is a tactic (a mate, fork, skewer, pin or a
+    piece that can be taken), this says which move allowed it, the mistake
+    itself or an earlier one the threat has been there since, and what to
+    look out for next time.
+
+    Parameters
+    ----------
+    move : dict
+        A move of an analysis, as in :func:`explain_move`.
+    previous : dict, optional
+        The opponent's move before it.
+    history : list of dict, optional
+        All moves of the game before ``move``, oldest first, to find an
+        earlier move that allowed the tactic.
+
+    Returns
+    -------
+    dict or None
+        ``kind``: the tactic, such as ``fork``; ``text``: the advice.
+        ``None`` when the move is not a mistake or its reply is no tactic.
+    """
+    if move.get("classification") not in ERRORS:
+        return None
+    board = chess.Board(move["fen_before"])
+    played = _uci(board, move.get("uci", ""))
+    if played is None:
+        return None
+    position = board.copy(stack=False)
+    position.push(played)
+    reply = _uci(position, move.get("reply_uci", ""))
+    if reply is None:
+        return None
+    recapture = played.to_square if board.is_capture(played) else None
+    found = {f.kind: f for f in move_facts(position, reply, REPLY, recapture)}
+    kinds = [k for k in TACTICS if k in found]
+    if not kinds:
+        return None
+    kind = kinds[0]
+
+    label = move.get("label") or board.san(played)
+    color = board.turn
+    after = position.copy(stack=False)
+    after.push(reply)
+    sentences = []
+    if kind == "wins":
+        victim = _piece(position, reply.to_square)
+        what = f"the threat to the {victim}"
+        already = f"The {victim} could already be taken"
+    else:
+        what = TACTIC_NAMES[kind]
+        already = f"{what.capitalize()} was already possible"
+
+    waiting = _waiting(board)
+    if waiting is not None and _threatens(waiting, reply, kind):
+        sentences.append(
+            _origin(
+                kind,
+                label,
+                color,
+                reply,
+                already,
+                what,
+                history or ([previous] if previous else []),
+            )
+        )
+    else:
+        sentences.append(
+            _cause(kind, label, board, played, position, reply, after) + "."
+        )
+    sentences.append(_tip(kind, position, reply))
+    return {"kind": kind, "text": " ".join(sentences)}
+
+
+def _origin(
+    kind: str,
+    label: str,
+    color: chess.Color,
+    reply: chess.Move,
+    already: str,
+    what: str,
+    history: list[dict],
+) -> str:
+    """Which earlier move allowed a tactic that was already possible.
+
+    Goes back through the game while the tactic stays possible: either a
+    move of the player allowed it, or a move of the opponent set it up.
+    """
+    for index in range(len(history) - 1, max(len(history) - 20, 0) - 1, -1):
+        earlier = history[index]
+        if earlier.get("color") != _color(color):
+            continue
+        board = chess.Board(earlier["fen_before"])
+        earlier_move = _uci(board, earlier.get("uci", ""))
+        if earlier_move is None:
+            break
+        position = board.copy(stack=False)
+        position.push(earlier_move)
+        if not _threatens(position, reply, kind):
+            # The opponent's next move set it up.
+            if index + 1 >= len(history):
+                break
+            setup = history[index + 1]
+            if index + 2 == len(history):
+                return (
+                    f"{_side(not color)}'s last move {setup['label']} set up "
+                    f"{what}, and {label} did nothing about it."
+                )
+            return (
+                f"{_side(not color)}'s move {setup['label']} set up {what}, and "
+                f"none of your moves since, {label} included, did anything "
+                "about it."
+            )
+        waiting = _waiting(board)
+        if waiting is None or not _threatens(waiting, reply, kind):
+            return (
+                f"{already} after your earlier {earlier['label']}, the move "
+                f"that allowed it, and {label} did nothing about it."
+            )
+    return f"{already}, and {label} did nothing about it."
+
+
+def _color(color: chess.Color) -> str:
+    return "white" if color == chess.WHITE else "black"
+
+
+def _cause(
+    kind: str,
+    label: str,
+    board: chess.Board,
+    played: chess.Move,
+    position: chess.Board,
+    reply: chess.Move,
+    after: chess.Board,
+) -> str:
+    """How the mistake ``played`` itself allowed the tactic ``reply``."""
+    to, frm = played.to_square, played.from_square
+    mover = board.turn
+    moved = _piece(position, to)
+    target = reply.to_square
+    gave_up = (
+        board.piece_type_at(frm) != chess.KING
+        and (frm == target or _guarded(board, target, frm))
+        and not position.attackers(mover, target)
+    )
+    if kind == "wins":
+        if target == to:
+            return f"{label} put the {moved}, where it can be taken"
+        victim = _piece(position, target)
+        if _guarded(board, target, frm) and frm != target:
+            return (
+                f"When the {chess.piece_name(board.piece_type_at(frm))} left "
+                f"{chess.square_name(frm)}, it stopped guarding the {victim}"
+            )
+        return f"{label} left the {victim} unprotected"
+    if kind == "fork":
+        if to in _targets(after, target):
+            return (
+                f"{label} put the {moved}, where it can be forked from "
+                f"{chess.square_name(target)}"
+            )
+        if gave_up:
+            return (
+                f"{label} stopped guarding {chess.square_name(target)}, the "
+                "square the fork comes from"
+            )
+    if kind == "pin":
+        pinned = [
+            s
+            for s in chess.SquareSet(after.occupied_co[mover])
+            if after.is_pinned(mover, s) and after.piece_type_at(s) != chess.KING
+        ]
+        if to in pinned or board.piece_type_at(frm) == chess.KING:
+            return f"{label} put the {moved} on the same line as your king"
+        king = after.king(mover)
+        if king is not None and frm in chess.SquareSet(chess.between(target, king)):
+            return (
+                f"{label} moved the {chess.piece_name(board.piece_type_at(frm))} "
+                f"off {chess.square_name(frm)}, opening the line to your king"
+            )
+    if kind == "skewer":
+        lined = skewer(after, target)
+        if lined and to in lined:
+            other = _piece(after, lined[0] if to == lined[1] else lined[1])
+            return f"{label} put the {moved} on one line with the {other}"
+    if kind == "mate" and gave_up:
+        return (
+            f"{label} stopped guarding {chess.square_name(target)}, the square "
+            "the mate comes from"
+        )
+    return f"{label} allowed {TACTIC_NAMES.get(kind, 'it')}"
+
+
 def _sentence(subject: str, facts: list[Fact]) -> str:
     if not facts:
         return ""
@@ -375,6 +732,7 @@ def explain_move(
     move: dict,
     previous: dict | None = None,
     hide_best: bool = False,
+    history: list[dict] | None = None,
 ) -> dict:
     """Explain one move of an analysis in plain English.
 
@@ -388,12 +746,16 @@ def explain_move(
     hide_best : bool
         Leave out the engine's best move, for a user who wants to find it
         themselves first.
+    history : list of dict, optional
+        All moves before it, oldest first, to find an earlier move that
+        allowed the opponent's tactic (see :func:`how_to_avoid`).
 
     Returns
     -------
     dict
         ``text``: the explanation; ``facts``: the facts it was built from,
-        as dictionaries of :class:`Fact`.
+        as dictionaries of :class:`Fact`; ``avoid``: for a mistake that runs
+        into a tactic, how to avoid it next time, else an empty string.
     """
     board = chess.Board(move["fen_before"])
     color = board.turn
@@ -409,7 +771,7 @@ def explain_move(
     facts: list[Fact] = []
     sentences: list[str] = []
     if played is None:
-        return {"text": "", "facts": []}
+        return {"text": "", "facts": [], "avoid": ""}
 
     label = move.get("label", move.get("san", ""))
     before = _for(move.get("eval_before"), color)
@@ -503,9 +865,11 @@ def explain_move(
         sentences.append(text + ".")
     elif best is not None and best != played and hide_best:
         sentences.append("There was a stronger move: try to find it.")
+    avoid = how_to_avoid(move, previous, history)
     return {
         "text": " ".join(s for s in sentences if s),
         "facts": [asdict(f) for f in facts],
+        "avoid": avoid["text"] if avoid else "",
     }
 
 
@@ -523,4 +887,6 @@ def explain_ply(result: dict, ply: int, hide_best: bool = False) -> dict | None:
     if not 1 <= ply <= len(moves):
         return None
     previous = moves[ply - 2] if ply > 1 else None
-    return explain_move(moves[ply - 1], previous, hide_best=hide_best)
+    return explain_move(
+        moves[ply - 1], previous, hide_best=hide_best, history=moves[: ply - 1]
+    )

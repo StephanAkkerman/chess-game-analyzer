@@ -381,6 +381,7 @@ def test_move_explanations(tmp_path, scholars_mate_pgn):
         assert plain["coach"] is False
         assert plain["text"].startswith("3...Nf6 is a blunder")
         assert "Better was g6" in plain["text"]
+        assert "Qh5 set up the mate" in plain["avoid"]
         assert "g6" not in client.get(f"{url}/6?hide_best=true").json()["text"]
 
         worded = client.get(f"{url}/6?coach=true").json()

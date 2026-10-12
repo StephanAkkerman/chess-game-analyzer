@@ -5,8 +5,8 @@ module picks it from the analysis of one side:
 
 - the turning point, the move that cost that side the most of its winning
   chances, with what was wrong with it and the move that would have kept the
-  game (see :func:`chess_analyzer.explain.explain_move`) and a tip for that
-  kind of mistake;
+  game (see :func:`chess_analyzer.explain.explain_move`), and how to avoid
+  the tactic that punished it or else a tip for that kind of mistake;
 - or, when that side made no mistake, what went well, so the player knows
   what to keep doing.
 
@@ -190,10 +190,16 @@ def game_takeaway(result: dict, color: str, hide_best: bool = False) -> dict:
 
     ply = move["ply"]
     previous = moves[ply - 2] if ply > 1 else None
-    explanation = explain_move(move, previous, hide_best=hide_best)
+    explanation = explain_move(
+        move, previous, hide_best=hide_best, history=moves[: ply - 1]
+    )
     advice = []
     tip = CATEGORY_ADVICE.get(move.get("category") or "")
-    if tip:
+    if explanation["avoid"]:
+        # How to avoid the tactic that punished it, more concrete than a
+        # tip for the kind of mistake.
+        advice.append(explanation["avoid"])
+    elif tip:
         advice.append(f"Next time, {tip}.")
     if move.get("time_flag") in TIME_TIPS:
         advice.append(TIME_TIPS[move["time_flag"]])
