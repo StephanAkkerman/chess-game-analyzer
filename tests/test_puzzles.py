@@ -87,6 +87,9 @@ def test_missed_move_keeps_the_engine_line(legal_result):
     assert h3["best_line"] == LEGAL_LINE
     # Moves without an error keep no line.
     assert legal_result["moves"][0]["best_line"] == []
+    # The line after the mistake starts with the opponent's best reply.
+    assert h3["reply_line"] == [h3["reply_uci"]]
+    assert legal_result["moves"][0]["reply_line"] == []
 
     [puzzle] = candidates(legal_result, "white")
     assert (puzzle["ply"], puzzle["fen"], puzzle["line"]) == (9, LEGAL_FEN, LEGAL_LINE)

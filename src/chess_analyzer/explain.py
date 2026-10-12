@@ -7,8 +7,10 @@ move of an analysed game it works out concrete facts with python-chess:
   development, the centre, castling, passed pawns, pieces it defends or
   leaves hanging;
 - for a mistake, what the opponent's best reply does to punish it;
-- what the engine's best move would have done instead, and where its line
-  ends up in material;
+- for a mistake, what the opponent's best reply does to punish it or
+  threatens next, and where the engine's line after it ends up in material;
+- what the engine's best move would have done instead, where its line ends
+  up in material, and why the reply does not work against it;
 - for a mistake that runs into a tactic (a fork, pin, skewer, mate, or a piece
   that can be taken), how to avoid it next time: which move allowed it, this
   one or an earlier one, and what to look out for.
@@ -209,6 +211,18 @@ def skewer(
     return None
 
 
+def _pinner(board: chess.Board, square: chess.Square) -> chess.Square | None:
+    """The enemy piece that pins the piece on ``square`` to its king."""
+    color = board.color_at(square)
+    if color is None:
+        return None
+    sliders = board.bishops | board.rooks | board.queens
+    for pinner in board.pin(color, square) & board.attackers(not color, square):
+        if chess.BB_SQUARES[pinner] & sliders:
+            return pinner
+    return None
+
+
 def _sign(n: int) -> int:
     return (n > 0) - (n < 0)
 
@@ -357,6 +371,22 @@ def move_facts(
         if is_hanging(board, square) and not is_hanging(after, square):
             add("defends", f"defends the {_piece(board, square)}")
             break
+
+    # Friendly pieces this move lets the opponent pin to the king.
+    for square in chess.SquareSet(after.occupied_co[mover]):
+        if (
+            after.piece_type_at(square) != chess.KING
+            and after.is_pinned(mover, square)
+            and not board.is_pinned(mover, square)
+        ):
+            pinner = _pinner(after, square)
+            if pinner is not None:
+                add(
+                    "pinned",
+                    f"lets the {_piece(after, pinner)} pin the "
+                    f"{_piece(after, square)} to the king",
+                )
+                break
 
     # Friendly pieces this move leaves hanging, the moved piece first.
     if not after.is_check():
@@ -722,6 +752,214 @@ def _cause(
     return f"{label} allowed {TACTIC_NAMES.get(kind, 'it')}"
 
 
+# What a quiet reply can threaten, most serious first.
+THREATS = ("mate", "wins", "fork")
+
+
+def threat(
+    board: chess.Board, before: chess.Board | None = None
+) -> tuple[chess.Move, Fact] | None:
+    """What the side that just moved threatens to do next in ``board``.
+
+    That is a mate, a piece it can win or a fork it could play if it were its
+    turn again. With ``before``, the position before its last move, only
+    threats that move created count. Returns the threatening move and what it
+    does.
+    """
+    waiting = _waiting(board)
+    if waiting is None:
+        return None
+    found: dict[str, tuple[chess.Move, Fact]] = {}
+    for move in waiting.legal_moves:
+        for fact in move_facts(waiting, move, REPLY):
+            if fact.kind not in THREATS or fact.kind in found:
+                continue
+            if before is not None and _threatens(before, move, fact.kind):
+                continue
+            found[fact.kind] = (move, fact)
+    for kind in THREATS:
+        if kind in found:
+            return found[kind]
+    return None
+
+
+def _threat_text(board: chess.Board, move: chess.Move, fact: Fact) -> str:
+    """``threatens ...`` for the threat ``move`` in ``board``."""
+    san = board.san(move)
+    if fact.kind == "mate":
+        return f"threatens mate with {san}"
+    # "wins the pawn on e5" -> "threatens Nxe5, winning the pawn on e5"
+    verb, rest = fact.text.split(" ", 1)
+    rest = rest.replace("also attacks", "also attacking")
+    return f"threatens {san}, {_ing(verb)} {rest}"
+
+
+def _ing(verb: str) -> str:
+    """``wins`` -> ``winning``, ``gives`` -> ``giving``."""
+    verb = verb.removesuffix("s")
+    if verb.endswith("e"):
+        return verb[:-1] + "ing"
+    if verb == "win":
+        return "winning"
+    return verb + "ing"
+
+
+def _why_not(
+    board: chess.Board,
+    played: chess.Move,
+    best: chess.Move,
+    reply: chess.Move,
+    punish: chess.Move,
+    kind: str,
+) -> str:
+    """Why ``punish`` does ``kind`` against ``played`` but not against ``best``.
+
+    ``board`` is the position before the move and ``punish`` the opponent's
+    reply ``reply`` itself or the move it threatens next. Returns a clause
+    such as ``the king is off the back rank``, or an empty string when there
+    is no simple reason.
+    """
+    color = board.turn
+    piece = board.piece_at(best.from_square)
+    if piece is None:
+        return ""
+    name = chess.piece_name(piece.piece_type)
+    target = punish.to_square
+    with_best, with_played = _pushed(board, best), _pushed(board, played)
+    if kind == "mate":
+        position = _pushed(with_played, reply) if punish != reply else with_played
+        if punish != reply:
+            position = _waiting(position) or position
+        if (
+            piece.piece_type == chess.KING
+            and _back_rank(position, punish)
+            and chess.square_rank(best.to_square) != chess.square_rank(played.to_square)
+        ):
+            return "the king is off the back rank"
+        if piece.piece_type != chess.KING and target in with_best.attacks(
+            best.to_square
+        ):
+            return (
+                f"the {name} on {chess.square_name(best.to_square)} guards "
+                f"{chess.square_name(target)}"
+            )
+        position = _pushed(with_best, reply)
+        if punish != reply:
+            position = _waiting(position)
+        if position is None or punish not in position.legal_moves:
+            return ""
+        position.push(punish)
+        king = position.king(color)
+        escapes = [
+            m.to_square
+            for m in position.legal_moves
+            if m.from_square == king and not position.is_capture(m)
+        ]
+        if position.is_check() and escapes:
+            return f"the king could escape to {chess.square_name(escapes[0])}"
+        return ""
+    if kind in ("wins", "capture"):
+        if best.from_square == target:
+            return f"the {name} is no longer on {chess.square_name(target)}"
+        if target in with_best.attacks(best.to_square) and not (
+            played.to_square != target
+            and target in with_played.attacks(played.to_square)
+        ):
+            return (
+                f"the {name} on {chess.square_name(best.to_square)} protects "
+                f"{chess.square_name(target)}"
+            )
+    if (
+        kind in ("check", "fork", "skewer", "pin")
+        and piece.piece_type == chess.KING
+        and played.from_square == best.from_square
+    ):
+        return f"the king is not on {chess.square_name(played.to_square)}"
+    return ""
+
+
+def _contrast(
+    board: chess.Board,
+    played: chess.Move,
+    best: chess.Move,
+    reply: chess.Move,
+    answer: list[Fact],
+    problem: tuple[chess.Move, Fact] | None,
+) -> tuple[str, Fact | None]:
+    """Why ``best`` does not run into ``reply`` the way ``played`` does.
+
+    ``board`` is the position before the move, ``answer`` what ``reply``
+    does against ``played`` and ``problem`` what it threatens there (see
+    :func:`threat`). Returns a sentence and the fact it states, or an empty
+    string and ``None`` when the reply works just as well against ``best``.
+    """
+    if not answer and problem is None:
+        return "", None
+    position, with_best = _pushed(board, played), _pushed(board, best)
+    reply_san, best_san = position.san(reply), board.san(best)
+    if reply not in with_best.legal_moves:
+        if best.to_square == reply.from_square and board.is_capture(best):
+            text = (
+                f"removes the {_piece(board, best.to_square)} before it can play "
+                f"{reply_san}"
+            )
+            return f"That {text}.", Fact(BEST, "prevents", f"{best_san} {text}")
+        if (
+            reply.to_square == played.to_square
+            or board.is_capture(best)
+            or with_best.is_check()
+        ):
+            # The reply takes the piece that moved, or the better move is
+            # forcing, which says more than that the reply is gone.
+            return "", None
+        text = f"{reply_san} is not possible"
+        return f"After {best_san}, {text}.", Fact(BEST, "prevents", text)
+    if answer:
+        if reply.to_square == played.to_square:
+            # The reply takes the piece that moved: nothing to explain.
+            return "", None
+        kinds = {f.kind for f in move_facts(with_best, reply, REPLY)}
+        if answer[0].kind in kinds:
+            return "", None
+        kind, punish = answer[0].kind, reply
+        text = f"{reply_san} no longer {answer[0].text}"
+    else:
+        move, fact = problem
+        waiting = _waiting(_pushed(with_best, reply))
+        if waiting is None or _threatens(waiting, move, fact.kind):
+            return "", None
+        threat_san = _waiting(_pushed(position, reply)).san(move)
+        what = f"mate with {threat_san}" if fact.kind == "mate" else threat_san
+        kind, punish = fact.kind, move
+        text = f"{reply_san} no longer threatens {what}"
+    why = _why_not(board, played, best, reply, punish, kind)
+    fact = Fact(BEST, "prevents", f"after {best_san}, {text}")
+    return f"After {best_san}, {text}" + (f", because {why}." if why else "."), fact
+
+
+def _avoids(board: chess.Board, played: chess.Move, best: chess.Move) -> str:
+    """A pin ``played`` walks into and ``best`` avoids, as a sentence."""
+    color = board.turn
+    with_played, with_best = _pushed(board, played), _pushed(board, best)
+    best_san = board.san(best)
+    for square in chess.SquareSet(with_played.occupied_co[color]):
+        if (
+            with_played.piece_type_at(square) != chess.KING
+            and with_played.is_pinned(color, square)
+            and not board.is_pinned(color, square)
+            and with_best.piece_at(square) == with_played.piece_at(square)
+            and not with_best.is_pinned(color, square)
+        ):
+            return f"After {best_san}, the {_piece(with_best, square)} is not pinned."
+    return ""
+
+
+def _pushed(board: chess.Board, move: chess.Move) -> chess.Board:
+    after = board.copy(stack=False)
+    after.push(move)
+    return after
+
+
 def _sentence(subject: str, facts: list[Fact]) -> str:
     if not facts:
         return ""
@@ -821,6 +1059,8 @@ def explain_move(
     reply = (
         _uci(position, move.get("reply_uci", "")) if classification in ERRORS else None
     )
+    answer: list[Fact] = []
+    problem = None
     if reply is not None:
         answer = [
             f
@@ -834,17 +1074,46 @@ def explain_move(
         ]
         facts += answer
         reply_san = position.san(reply)
+        if not answer:
+            problem = threat(_pushed(position, reply), position)
         if answer:
-            sentences.append(
+            text = (
                 f"The problem is that {opponent} answers {reply_san}, which "
-                f"{_and([f.text for f in answer[:2]])}."
+                f"{_and([f.text for f in answer[:2]])}"
+            )
+        elif problem is not None:
+            threat_move, fact = problem
+            threatens = _threat_text(
+                _waiting(_pushed(position, reply)), threat_move, fact
+            )
+            facts.append(Fact(REPLY, "threatens", threatens))
+            text = (
+                f"The problem is that {opponent} answers {reply_san}, which {threatens}"
             )
         else:
-            sentences.append(f"{opponent}'s best answer is {reply_san}.")
+            text = f"{opponent}'s best answer is {reply_san}"
+        line = move.get("reply_line") or []
+        if len(line) > 1:
+            san, gained, mated = line_outcome(position, line, not color)
+            if mated:
+                text += f"; after {san} it is mate"
+                facts.append(Fact(REPLY, "line_mate", f"the line {san} ends in mate"))
+            elif gained >= MATERIAL_GAIN:
+                text += f"; after {san} {opponent} is {_pawns(gained)} up in material"
+                facts.append(
+                    Fact(
+                        REPLY, "line_material", f"the line {san} wins {_pawns(gained)}"
+                    )
+                )
+        sentences.append(text + ".")
 
     best = _uci(board, move.get("best_uci", ""))
     if best is not None and best != played and not hide_best:
-        better = [f for f in move_facts(board, best, BEST, prior) if f.kind != "hangs"]
+        better = [
+            f
+            for f in move_facts(board, best, BEST, prior)
+            if f.kind not in ("hangs", "pinned")
+        ]
         facts += better
         best_san = board.san(best)
         start = "Better was" if classification in ERRORS else "The engine preferred"
@@ -862,7 +1131,19 @@ def explain_move(
                 facts.append(
                     Fact(BEST, "line_material", f"the line {san} wins {_pawns(gained)}")
                 )
-        sentences.append(text + ".")
+        contrast = ""
+        if reply is not None:
+            contrast, fact = _contrast(board, played, best, reply, answer, problem)
+            if fact is None and (contrast := _avoids(board, played, best)):
+                fact = Fact(BEST, "prevents", contrast[0].lower() + contrast[1:-1])
+            if fact is not None:
+                facts.append(fact)
+        lead = f"After {best_san}, "
+        if contrast and text == f"{start} {best_san}" and contrast.startswith(lead):
+            # Better was Kh2: after it, ...
+            sentences.append(f"{text}: after it, {contrast[len(lead) :]}")
+        else:
+            sentences += [text + ".", contrast]
     elif best is not None and best != played and hide_best:
         sentences.append("There was a stronger move: try to find it.")
     avoid = how_to_avoid(move, previous, history)

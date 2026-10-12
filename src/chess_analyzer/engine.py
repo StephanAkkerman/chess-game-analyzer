@@ -134,7 +134,9 @@ class MoveAnalysis:
     the position before the move and its evaluation, when it was searched.
     ``critical`` marks a critical moment: see :func:`is_critical`.
     ``best_line`` is the engine's line from the position before the move, in
-    UCI, for mistakes, misses, blunders and critical moments.
+    UCI, for mistakes, misses, blunders and critical moments. ``reply_line``
+    is the engine's line from the position after a mistake, miss or blunder,
+    starting with the opponent's best reply.
 
     ``reply_uci`` and ``reply_san`` give the opponent's best reply, ``phase``
     the game phase and ``category`` what kind of error a mistake or blunder
@@ -168,6 +170,7 @@ class MoveAnalysis:
     second_eval: int | None = None
     critical: bool = False
     best_line: list[str] = field(default_factory=list)
+    reply_line: list[str] = field(default_factory=list)
 
     @property
     def move_number(self) -> int:
@@ -715,6 +718,9 @@ def analyze_game(
         ):
             line = before.line if before.line[:1] == [best] else [best]
             analysis.moves[-1].best_line = [m.uci() for m in line]
+        if reply is not None and classification in ERRORS:
+            line = after.line if after.line[:1] == [reply] else [reply]
+            analysis.moves[-1].reply_line = [m.uci() for m in line]
     _keep_most_critical(analysis)
     return analysis
 
