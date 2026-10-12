@@ -1761,6 +1761,8 @@ class AnalysisView {
       }
       if (!data.text) return box.replaceChildren();
       const children = [el("p", {}, el("strong", { text: data.coach ? "Coach. " : "Why. " }), data.text)];
+      // For a mistake that runs into a tactic, what to watch for next time.
+      if (data.avoid) children.push(el("p", {}, el("strong", { text: "How to avoid it. " }), data.avoid));
       if (coach && !data.coach) {
         children.push(el("p", { class: "muted small", text: "The coach is not available right now." }));
       } else if (this.coach && !coach) {

@@ -80,6 +80,7 @@ def test_takeaway_of_a_lost_game():
     assert takeaway["ply"] == 6
     assert "Nf6 is a blunder" in takeaway["text"]
     assert "Better was g6" in takeaway["text"]
+    assert "Qh5 set up the mate" in takeaway["advice"]
     assert "checks and threats against your king" in takeaway["advice"]
     assert "under 3 seconds" in takeaway["advice"]
     hidden = game_takeaway(result, "black", hide_best=True)

@@ -45,7 +45,11 @@ def _explanation(analysis: GameAnalysis, move: MoveAnalysis) -> list[str]:
     """The plain-English explanation of ``move``, wrapped and indented."""
     index = analysis.moves.index(move)
     previous = move_to_dict(analysis.moves[index - 1]) if index else None
-    text = explain_move(move_to_dict(move), previous)["text"]
+    history = [move_to_dict(m) for m in analysis.moves[:index]]
+    explanation = explain_move(move_to_dict(move), previous, history=history)
+    text = explanation["text"]
+    if explanation["avoid"]:
+        text += f" How to avoid it: {explanation['avoid']}"
     return textwrap.wrap(text, 72, initial_indent=" " * 6, subsequent_indent=" " * 6)
 
 

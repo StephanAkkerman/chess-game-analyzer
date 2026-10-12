@@ -4,7 +4,7 @@ import chess
 import requests
 
 from chess_analyzer.coach import Coach, mentions_only
-from chess_analyzer.explain import explain_move, line_outcome, move_facts
+from chess_analyzer.explain import explain_move, how_to_avoid, line_outcome, move_facts
 
 
 def move_dict(board, uci, classification, eval_before, eval_after, **extra):
@@ -121,3 +121,95 @@ def test_coach_rewords_and_validates():
 def test_mentions_only():
     assert mentions_only("Castle with O-O, then Re1.", "O-O and Re1 on e1")
     assert not mentions_only("Bxf7+ wins.", "Bc4 eyes f7")
+
+
+def played(fens_and_moves, classification="good", **extra):
+    """Move dictionaries for ``(fen, uci)`` pairs, in order."""
+    moves = []
+    for fen, uci in fens_and_moves:
+        board = chess.Board(fen)
+        move = move_dict(board, uci, classification, None, None)
+        move["color"] = "white" if board.turn == chess.WHITE else "black"
+        moves.append(move)
+    moves[-1].update(extra)
+    return moves
+
+
+def blunder(fen, uci, reply, history=()):
+    board = chess.Board(fen)
+    move = move_dict(board, uci, "blunder", 0, -500, reply_uci=reply)
+    move["color"] = "white" if board.turn == chess.WHITE else "black"
+    return how_to_avoid(move, history[-1] if history else None, list(history))
+
+
+def test_how_to_avoid_a_fork_the_move_walks_into():
+    # Qc3 puts the queen a knight's jump from e2, like the king on g1.
+    avoid = blunder("6k1/8/8/8/3n4/8/8/Q5K1 w - - 0 1", "a1c3", "d4e2")
+    assert avoid["kind"] == "fork"
+    assert avoid["text"].startswith(
+        "Qc3 put the queen on c3, where it can be forked from e2."
+    )
+    assert "knight's jump" in avoid["text"]
+
+
+def test_how_to_avoid_names_the_earlier_move_that_allowed_it():
+    start = chess.Board("6k1/8/8/8/3n4/8/7P/Q5K1 w - - 0 1")
+    history = [(start.fen(), "a1c3")]
+    start.push_uci("a1c3")
+    history.append((start.fen(), "g8f8"))
+    start.push_uci("g8f8")
+    avoid = blunder(start.fen(), "h2h3", "d4e2", played(history))
+    assert avoid["text"].startswith(
+        "The fork was already possible after your earlier Qc3, the move that "
+        "allowed it, and h3 did nothing about it."
+    )
+
+
+def test_how_to_avoid_a_threat_the_opponent_set_up():
+    board = chess.Board()
+    history = []
+    for san in ("e4", "e5", "Nf3", "Nc6", "Nc3", "Nf6", "Nb5"):
+        history.append((board.fen(), board.parse_san(san).uci()))
+        board.push_san(san)
+    avoid = blunder(board.fen(), "a7a6", "b5c7", played(history))
+    assert avoid["text"].startswith(
+        "White's last move Nb5 set up the fork, and a6 did nothing about it."
+    )
+
+
+def test_how_to_avoid_pins_skewers_and_mates():
+    # 3...d6 opens the diagonal from b5 to the king.
+    board = chess.Board()
+    for san in ("e4", "e5", "Nf3", "Nc6", "Nc3"):
+        board.push_san(san)
+    avoid = blunder(board.fen(), "d7d6", "f1b5")
+    assert avoid["kind"] == "pin"
+    assert avoid["text"].startswith(
+        "d6 moved the pawn off d7, opening the line to your king."
+    )
+    # Ke4 walks onto the e-file in front of the queen.
+    avoid = blunder("r5k1/8/8/8/3K4/8/4Q3/8 w - - 0 1", "d4e4", "a8e8")
+    assert avoid["kind"] == "skewer"
+    assert avoid["text"].startswith("Ke4 put the king on e4 on one line with the queen")
+    # Leaving the back rank to the rook.
+    avoid = blunder("3r2k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1", "a1a7", "d8d1")
+    assert avoid["kind"] == "mate"
+    assert avoid["text"].startswith(
+        "Ra7 stopped guarding d1, the square the mate comes from. Give your "
+        "king an escape square"
+    )
+    # A piece left where it can be taken.
+    avoid = blunder(
+        "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",
+        "d8g5",
+        "f3g5",
+    )
+    assert avoid["kind"] == "wins"
+    assert avoid["text"].startswith("Qg5 put the queen on g5, where it can be taken.")
+
+
+def test_how_to_avoid_only_explains_tactics_after_mistakes():
+    board = chess.Board()
+    move = move_dict(board, "e2e4", "best", 0, 30, reply_uci="e7e5")
+    assert how_to_avoid(move) is None
+    assert explain_move(move)["avoid"] == ""
