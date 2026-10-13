@@ -83,6 +83,56 @@ def test_explains_a_blunder_and_the_better_move():
     assert "try to find it" in hidden["text"]
 
 
+def test_explains_what_a_quiet_reply_threatens_and_how_the_better_move_stops_it():
+    # 23.Kh1 lets Rf8 threaten Rf1#: the bishop on d6 covers h2. With 23.g3
+    # the king gets h2 back.
+    board = chess.Board("r5k1/pp2q1p1/3b3p/7Q/6R1/2N4P/PP4P1/6K1 w - - 0 23")
+    move = move_dict(
+        board,
+        "g1h1",
+        "mistake",
+        -80,
+        -350,
+        label="23.Kh1",
+        best_uci="g2g3",
+        reply_uci="a8f8",
+    )
+    explanation = explain_move(move)
+    text = explanation["text"]
+    assert "Black answers Rf8, which threatens mate with Rf1#." in text
+    assert (
+        "Better was g3: after it, Rf8 no longer threatens mate with Rf1#, because "
+        "the king could escape to h2." in text
+    )
+    assert {
+        "about": "best",
+        "kind": "prevents",
+        "text": ("after g3, Rf8 no longer threatens mate with Rf1#"),
+    } in explanation["facts"]
+
+
+def test_explains_a_king_move_into_a_pin():
+    # 23.Kh1 puts the king on the long diagonal behind the knight on f3, so
+    # Rf8 wins it; 23.Kh2 keeps the knight free.
+    board = chess.Board("r5k1/1b4p1/1p5p/p2q4/3P4/P1P2N1P/1P2QP2/6K1 w - - 0 23")
+    move = move_dict(
+        board,
+        "g1h1",
+        "mistake",
+        -80,
+        -350,
+        label="23.Kh1",
+        best_uci="g1h2",
+        reply_uci="a8f8",
+        reply_line=["a8f8", "a3a4", "f8f3", "h1g1"],
+    )
+    text = explain_move(move)["text"]
+    assert "It lets the queen on d5 pin the knight on f3 to the king." in text
+    assert "Black answers Rf8, which puts pressure on the knight on f3" in text
+    assert "25. Kg1 Black is 3 pawns up in material." in text
+    assert text.endswith("Better was Kh2: after it, the knight on f3 is not pinned.")
+
+
 def test_line_outcome_ignores_a_half_finished_exchange():
     board = chess.Board("4k3/8/8/3n4/4P3/8/8/3QK3 w - - 0 30")
     # A line that stops right after a capture may stop before the recapture,
