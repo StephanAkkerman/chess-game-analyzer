@@ -459,6 +459,31 @@ def line_outcome(
     return san, min(balances[-2:]) - start, position.is_checkmate()
 
 
+def line_steps(board: chess.Board, line: list[str]) -> dict:
+    """The engine ``line`` from ``board``, move by move, to play out on a board.
+
+    Returns ``san``: the line as :func:`line_outcome` writes it; ``fen``: the
+    position it starts from; ``moves``: each move's ``san``, ``uci`` and the
+    ``fen`` after it. Illegal moves end the line.
+    """
+    position = board.copy(stack=False)
+    played = []
+    moves = []
+    for uci in line:
+        move = _uci(position, uci)
+        if move is None:
+            break
+        san = position.san(move)
+        played.append(move)
+        position.push(move)
+        moves.append({"san": san, "uci": move.uci(), "fen": position.fen()})
+    return {
+        "san": board.variation_san(played) if played else "",
+        "fen": board.fen(),
+        "moves": moves,
+    }
+
+
 def _waiting(board: chess.Board) -> chess.Board | None:
     """``board`` with the side to move passing, or ``None`` when in check."""
     if board.is_check():
@@ -993,7 +1018,9 @@ def explain_move(
     dict
         ``text``: the explanation; ``facts``: the facts it was built from,
         as dictionaries of :class:`Fact`; ``avoid``: for a mistake that runs
-        into a tactic, how to avoid it next time, else an empty string.
+        into a tactic, how to avoid it next time, else an empty string;
+        ``lines``: the engine lines the text spells out, as made by
+        :func:`line_steps`, so they can be played out on the board.
     """
     board = chess.Board(move["fen_before"])
     color = board.turn
@@ -1008,8 +1035,9 @@ def explain_move(
             prior = previous_move.to_square
     facts: list[Fact] = []
     sentences: list[str] = []
+    lines: list[dict] = []
     if played is None:
-        return {"text": "", "facts": [], "avoid": ""}
+        return {"text": "", "facts": [], "avoid": "", "lines": []}
 
     label = move.get("label", move.get("san", ""))
     before = _for(move.get("eval_before"), color)
@@ -1095,6 +1123,8 @@ def explain_move(
         line = move.get("reply_line") or []
         if len(line) > 1:
             san, gained, mated = line_outcome(position, line, not color)
+            if mated or gained >= MATERIAL_GAIN:
+                lines.append(line_steps(position, line))
             if mated:
                 text += f"; after {san} it is mate"
                 facts.append(Fact(REPLY, "line_mate", f"the line {san} ends in mate"))
@@ -1123,6 +1153,8 @@ def explain_move(
         line = move.get("best_line") or []
         if len(line) > 1:
             san, gained, mated = line_outcome(board, line, color)
+            if mated or gained >= MATERIAL_GAIN:
+                lines.append(line_steps(board, line))
             if mated:
                 text += f"; after {san} it is mate"
                 facts.append(Fact(BEST, "line_mate", f"the line {san} ends in mate"))
@@ -1151,6 +1183,7 @@ def explain_move(
         "text": " ".join(s for s in sentences if s),
         "facts": [asdict(f) for f in facts],
         "avoid": avoid["text"] if avoid else "",
+        "lines": lines,
     }
 
 

@@ -126,11 +126,26 @@ def test_explains_a_king_move_into_a_pin():
         reply_uci="a8f8",
         reply_line=["a8f8", "a3a4", "f8f3", "h1g1"],
     )
-    text = explain_move(move)["text"]
+    explanation = explain_move(move)
+    text = explanation["text"]
     assert "It lets the queen on d5 pin the knight on f3 to the king." in text
     assert "Black answers Rf8, which puts pressure on the knight on f3" in text
     assert "25. Kg1 Black is 3 pawns up in material." in text
     assert text.endswith("Better was Kh2: after it, the knight on f3 is not pinned.")
+
+    # The line the text spells out comes with its positions, to play it out
+    # on the board.
+    (line,) = explanation["lines"]
+    assert line["san"] in text
+    assert line["san"].startswith("23...Rf8 24. a4 Rxf3")
+    position = board.copy()
+    position.push_uci("g1h1")
+    assert line["fen"] == position.fen()
+    assert [m["uci"] for m in line["moves"]] == move["reply_line"]
+    assert [m["san"] for m in line["moves"]] == ["Rf8", "a4", "Rxf3", "Kg1"]
+    for step in line["moves"]:
+        position.push_uci(step["uci"])
+        assert step["fen"] == position.fen()
 
 
 def test_line_outcome_ignores_a_half_finished_exchange():

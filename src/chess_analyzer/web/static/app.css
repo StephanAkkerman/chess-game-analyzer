@@ -418,6 +418,18 @@ dialog input { width: 100%; margin: 8px 0; }
 .move-info .actions { margin-top: 10px; }
 .move-info .explain { margin-top: 8px; }
 .move-info .explain p { margin: 0 0 4px; }
+/* An engine line from the explanation, played out on the board */
+button.link.line-link { display: inline; font-weight: 400; text-align: left; }
+.move-info .line-box:not(:empty) {
+  margin: 6px 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+.move-info .line-box .actions { margin-top: 6px; }
+.line-moves { line-height: 1.8; }
+button.link.line-move { display: inline; text-decoration: none; font-weight: 400; color: var(--text); padding: 0 2px; }
+button.link.line-move.current { background: var(--accent); color: var(--surface); border-radius: 4px; font-weight: 600; }
 
 /* Key takeaway */
 .takeaways { display: grid; gap: 12px; }
