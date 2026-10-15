@@ -1383,6 +1383,18 @@ class AnalysisView {
     location.hash = `#/a/${encodeURIComponent(this.id)}/p/${move.ply}`;
   }
 
+  // Show the hidden best move for `move`: go to it and draw the best move on
+  // the board at once, so the answer needs no second click.
+  reveal(move) {
+    this.revealed.add(move.ply);
+    if (this.ply !== move.ply) this.go(move.ply);
+    this.pin = this.bestPreview(move);
+    this.hover = null;
+    this.renderBoard();
+    this.renderMoveInfo();
+    this.renderTakeaway();
+  }
+
   // Whether `move` is one of the user's own misses whose best move is still
   // hidden.
   hidesBest(move) {
@@ -1660,15 +1672,7 @@ class AnalysisView {
           "div",
           { class: "actions row" },
           el("button", { type: "button", class: "primary", text: "Solve it as a puzzle", onclick: () => this.startPuzzle(move) }),
-          el("button", {
-            type: "button",
-            text: "Show the answer",
-            onclick: () => {
-              this.revealed.add(move.ply);
-              this.renderMoveInfo();
-              this.renderTakeaway();
-            },
-          }),
+          el("button", { type: "button", text: "Show the answer", onclick: () => this.reveal(move) }),
         ),
       );
     } else if (move.best_san) {
@@ -1852,15 +1856,7 @@ class AnalysisView {
         }
         if (hidden) {
           actions.push(
-            el("button", {
-              type: "button",
-              text: "Show the answer",
-              onclick: () => {
-                this.revealed.add(move.ply);
-                this.renderTakeaway();
-                this.renderMoveInfo();
-              },
-            }),
+            el("button", { type: "button", text: "Show the answer", onclick: () => this.reveal(move) }),
           );
         }
         if (actions.length) children.push(el("div", { class: "actions row" }, ...actions));
