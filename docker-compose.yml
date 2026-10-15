@@ -1,5 +1,5 @@
 # Deploy with: cp .env.example .env, edit it, then `docker compose up -d`.
-# See README.md ("Self-hosting") for details.
+# See README.md ("Deploying it on a Raspberry Pi") for details.
 services:
   app:
     image: ghcr.io/stephanakkerman/chess-game-analyzer:latest
