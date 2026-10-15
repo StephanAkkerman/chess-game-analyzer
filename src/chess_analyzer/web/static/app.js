@@ -1480,6 +1480,104 @@ class AnalysisView {
     return this.pin?.kind === "best";
   }
 
+  // Step `step` of an engine line from the explanation: the position after
+  // that many of its moves, with the last one highlighted and an arrow for
+  // the next.
+  linePreview(line, step) {
+    step = Math.max(0, Math.min(line.moves.length, step));
+    return {
+      kind: "line",
+      line,
+      step,
+      fen: step > 0 ? line.moves[step - 1].fen : line.fen,
+      uci: line.moves[step]?.uci ?? null,
+      last: step > 0 ? line.moves[step - 1].uci : null,
+    };
+  }
+
+  // Play out `line` on the board, starting at `step`.
+  showLine(line, step = 0) {
+    this.pin = this.linePreview(line, step);
+    this.hover = null;
+    this.renderBoard();
+    this.renderLine();
+  }
+
+  // Leave the line and show the game again.
+  closeLine() {
+    this.pin = null;
+    this.renderBoard();
+    this.renderLine();
+  }
+
+  // The controls of the line being played out, under the explanation.
+  renderLine() {
+    const box = document.querySelector("#move-info .line-box");
+    if (!box) return;
+    const pin = this.pin?.kind === "line" ? this.pin : null;
+    if (!pin) return box.replaceChildren();
+    const { line, step } = pin;
+    const color = line.fen.split(" ")[1];
+    let number = Number(line.fen.split(" ")[5]);
+    const moves = [];
+    line.moves.forEach((m, i) => {
+      const white = (color === "w") === (i % 2 === 0);
+      if (white) moves.push(`${number}. `);
+      else if (i === 0) moves.push(`${number}... `);
+      if (!white) number += 1;
+      moves.push(
+        el("button", {
+          type: "button",
+          class: `link line-move${i + 1 === step ? " current" : ""}`,
+          text: m.san,
+          "aria-current": i + 1 === step ? "step" : null,
+          onclick: () => this.showLine(line, i + 1),
+        }),
+        " ",
+      );
+    });
+    box.replaceChildren(
+      el("p", { class: "line-moves" }, ...moves),
+      el(
+        "div",
+        { class: "actions row" },
+        el("button", { type: "button", "aria-label": "Previous move of the line", text: "◀", disabled: step === 0, onclick: () => this.showLine(line, step - 1) }),
+        el("button", { type: "button", "aria-label": "Next move of the line", text: "▶", disabled: step === line.moves.length, onclick: () => this.showLine(line, step + 1) }),
+        el("button", { type: "button", text: "Back to the game", onclick: () => this.closeLine() }),
+      ),
+    );
+  }
+
+  // `text` with every engine line in `lines` made a link that plays it out
+  // on the board. Lines the text doesn't spell out, as a coach may reword
+  // them away, get a link of their own after it.
+  withLines(text, lines) {
+    const nodes = [text];
+    const missing = [];
+    for (const line of lines) {
+      if (!line.san || !line.moves.length) continue;
+      const i = nodes.findIndex((n) => typeof n === "string" && n.includes(line.san));
+      if (i < 0) {
+        missing.push(line);
+        continue;
+      }
+      const [before, ...rest] = nodes[i].split(line.san);
+      nodes.splice(i, 1, before, this.lineLink(line, line.san), rest.join(line.san));
+    }
+    for (const line of missing) nodes.push(" ", this.lineLink(line, `Play out ${line.san}`));
+    return nodes.filter((n) => n !== "");
+  }
+
+  lineLink(line, text) {
+    return el("button", {
+      type: "button",
+      class: "link line-link",
+      title: "Play this line on the board",
+      text,
+      onclick: () => this.showLine(line, 0),
+    });
+  }
+
   setHover(preview) {
     this.hover = preview;
     this.renderBoard();
@@ -1523,7 +1621,8 @@ class AnalysisView {
       highlight.add(move.uci.slice(0, 2)).add(move.uci.slice(2, 4));
       badgeSquare = move.uci.slice(2, 4);
     }
-    if (shown) highlight.add(shown.uci.slice(0, 2));
+    if (shown?.uci) highlight.add(shown.uci.slice(0, 2));
+    if (shown?.last) highlight.add(shown.last.slice(0, 2)).add(shown.last.slice(2, 4));
 
     const squares = [];
     for (let r = 0; r < 8; r++) {
@@ -1554,7 +1653,7 @@ class AnalysisView {
       }
     }
     if (shown) {
-      squares.push(this.arrow(shown.uci));
+      if (shown.uci) squares.push(this.arrow(shown.uci));
     } else {
       const best = this.engineMove();
       if (best) squares.push(this.arrow(best, "engine"));
@@ -1764,7 +1863,10 @@ class AnalysisView {
         return;
       }
       if (!data.text) return box.replaceChildren();
-      const children = [el("p", {}, el("strong", { text: data.coach ? "Coach. " : "Why. " }), data.text)];
+      const children = [
+        el("p", {}, el("strong", { text: data.coach ? "Coach. " : "Why. " }), ...this.withLines(data.text, data.lines || [])),
+      ];
+      children.push(el("div", { class: "line-box" }));
       // For a mistake that runs into a tactic, what to watch for next time.
       if (data.avoid) children.push(el("p", {}, el("strong", { text: "How to avoid it. " }), data.avoid));
       if (coach && !data.coach) {
@@ -1797,6 +1899,7 @@ class AnalysisView {
         );
       }
       box.replaceChildren(...children);
+      this.renderLine();
     };
     getConfig().then((config) => {
       this.coach = Boolean(config.coach);
@@ -2239,11 +2342,13 @@ class AnalysisView {
   }
 
   bindControls() {
+    // While an engine line is played out, the controls step through it.
+    const line = () => (this.pin?.kind === "line" ? this.pin : null);
     const actions = {
-      start: () => this.go(0),
-      prev: () => this.go(this.ply - 1),
-      next: () => this.go(this.ply + 1),
-      end: () => this.go(this.moves.length),
+      start: () => (line() ? this.showLine(line().line, 0) : this.go(0)),
+      prev: () => (line() ? this.showLine(line().line, line().step - 1) : this.go(this.ply - 1)),
+      next: () => (line() ? this.showLine(line().line, line().step + 1) : this.go(this.ply + 1)),
+      end: () => (line() ? this.showLine(line().line, line().line.moves.length) : this.go(this.moves.length)),
     };
     for (const button of document.querySelectorAll("[data-nav]")) {
       button.addEventListener("click", actions[button.dataset.nav]);
@@ -2269,6 +2374,11 @@ class AnalysisView {
         return;
       }
       if (event.target.closest("input, textarea, select")) return;
+      if (event.key === "Escape" && line()) {
+        event.preventDefault();
+        this.closeLine();
+        return;
+      }
       const key = { ArrowLeft: "prev", ArrowRight: "next", Home: "start", End: "end" }[event.key];
       if (key) {
         event.preventDefault();
@@ -2292,6 +2402,7 @@ class AnalysisView {
       const steps = Math.trunc((e.clientX - dragX) / STEP_PX);
       if (!steps) return;
       dragX += steps * STEP_PX;
+      if (line()) return this.showLine(line().line, line().step + steps);
       const ply = Math.max(0, Math.min(this.moves.length, this.ply + steps));
       if (ply !== this.ply) this.go(ply);
     });
