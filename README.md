@@ -96,7 +96,16 @@ The Docker image runs on 64-bit Raspberry Pi OS (arm64) as well as on x86-64 mac
 
    This pulls the image that GitHub Actions publishes to `ghcr.io/stephanakkerman/chess-game-analyzer` for every push to `main`. If that package is private, run `docker login ghcr.io` first, or make the package public in its GitHub settings. You can also build the image on the Pi with `docker compose up -d --build`.
 
-To update, run `docker compose pull && docker compose up -d`. Analyses are kept in the `analyzer-data` volume.
+To update, run `make update` in the repository folder. It runs `git pull`, pulls the latest image and restarts the stack, picking up the `COMPOSE_PROFILES` in `.env`. If the image can't be pulled, it builds it from source instead. No `make` on the Pi? Run the same steps directly:
+
+```bash
+git pull
+docker compose pull
+docker compose down
+docker compose up -d
+```
+
+Analyses are kept in the `analyzer-data` volume.
 
 To let a language model reword the explanations like a coach, add `coach` to `COMPOSE_PROFILES`, which runs a small model with Ollama on the Pi, or point the server at a hosted API. The [technical details](docs/README.md) cover this, every [server setting](docs/README.md#server-configuration), what the image contains and how to build your own.
 
