@@ -111,6 +111,27 @@ main {
   margin: 0 auto;
   padding: 16px;
 }
+/* The analysis and the games page use the width of larger screens. */
+main:has(.analysis) { max-width: 1800px; }
+main:has(.home-side > :not([hidden])) { max-width: 1400px; }
+
+/* Games page: one column on phones, in the order of the template. With
+   statistics to show on a wider screen, the search and the games sit on
+   the left and the statistics on the right. */
+.home-main, .home-side { display: contents; }
+.home { max-width: 760px; margin: 0 auto; }
+@media (min-width: 1000px) {
+  .home:has(.home-side > :not([hidden])) {
+    max-width: none;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+    grid-template-rows: auto 1fr;
+    column-gap: 16px;
+    align-items: start;
+  }
+  .home:has(.home-side > :not([hidden])) .home-main { display: block; grid-column: 1; }
+  .home:has(.home-side > :not([hidden])) .home-side { display: block; grid-column: 2; grid-row: 1 / span 2; }
+}
 
 .card {
   background: var(--surface);
@@ -254,11 +275,39 @@ dialog input { width: 100%; margin: 8px 0; }
   transition: width 0.4s ease;
 }
 
-/* Analysis layout */
+/* Analysis layout. Phones show the board above everything else. From
+   tablets in landscape up, the board sits next to the rest and is as large
+   as the height of the screen allows: it, the players and the controls fit
+   on the screen, so the moves can be stepped through without scrolling.
+   215px is the height of everything but the board, 30px the evaluation bar
+   and its gap. */
 .analysis { display: grid; gap: 16px; }
-@media (min-width: 900px) {
-  .analysis { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); align-items: start; }
-  .board-column { position: sticky; top: 72px; }
+@media (min-width: 900px), (orientation: landscape) and (min-width: 640px) {
+  .analysis {
+    grid-template-columns: max(300px, min(calc(100svh - 185px), 60%, 960px)) minmax(300px, 1fr);
+    align-items: start;
+  }
+  /* The puzzle board has no evaluation bar. */
+  .analysis.puzzle-page {
+    grid-template-columns: max(300px, min(calc(100svh - 215px), 60%, 930px)) minmax(300px, 1fr);
+  }
+  .board-column { position: sticky; top: 64px; }
+  .moves { max-height: max(320px, 40svh); }
+}
+/* On short screens the board would not fit next to the topbar anyway. */
+@media (max-height: 560px) {
+  .board-column { position: static; }
+}
+/* With room for two columns beside the board, the game's summary moves
+   to its own column. */
+.side-column { container-type: inline-size; }
+@container (min-width: 820px) {
+  .side-panes {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 16px;
+    align-items: start;
+  }
 }
 
 .player {
@@ -493,7 +542,7 @@ button.link {
 
 /* Summary */
 .summary { display: grid; gap: 16px; }
-@media (min-width: 520px) { .summary { grid-template-columns: 1fr 1fr; } }
+.summary { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
 .side h3 { font-size: 0.95rem; margin: 0 0 6px; display: flex; align-items: center; gap: 6px; }
 .stat { font-size: 1.8rem; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
 .stat-label { color: var(--muted); font-size: 0.8rem; margin-bottom: 8px; }
