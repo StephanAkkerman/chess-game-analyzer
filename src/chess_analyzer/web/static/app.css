@@ -418,15 +418,19 @@ dialog input { width: 100%; margin: 8px 0; }
 
 .arrows { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 3; opacity: 0.85; }
 .arrows.engine { opacity: 0.6; }
-.board-column { scroll-margin-top: 64px; }
+.board-column { scroll-margin-top: 64px; min-width: 0; }
 
 .controls {
   display: grid;
-  grid-template-columns: repeat(4, 1fr) auto auto auto;
+  grid-template-columns: repeat(4, 1fr) auto auto auto auto;
   gap: 6px;
   margin-top: 8px;
 }
 .controls button { padding: 8px; font-size: 1.05rem; }
+@media (max-width: 380px) {
+  .controls { gap: 4px; }
+  .controls button { padding: 8px 6px; }
+}
 .controls button[aria-pressed="true"] { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
 
 /* Classification colours: always shown with a symbol and a word. */
@@ -546,6 +550,8 @@ button.link {
 .side h3 { font-size: 0.95rem; margin: 0 0 6px; display: flex; align-items: center; gap: 6px; }
 .stat { font-size: 1.8rem; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
 .stat-label { color: var(--muted); font-size: 0.8rem; margin-bottom: 8px; }
+.stat.stat-small { font-size: 1.2rem; }
+.game-rating { margin: -4px 0 8px; }
 .counts { list-style: none; padding: 0; margin: 0 0 8px; display: grid; gap: 2px; }
 .counts li { display: flex; justify-content: space-between; font-size: 0.9rem; }
 .counts li span:first-child::before {
@@ -693,3 +699,43 @@ button.link.opening-name { text-align: left; text-decoration: none; color: var(-
 .verdict.ahead { color: var(--good); }
 .verdict.behind { color: var(--serious); }
 .verdict.level { color: var(--muted); }
+
+/* Moving the pieces on the analysis board to try your own moves */
+.board .sq.selected::before { content: ""; position: absolute; inset: 0; background: rgba(61, 124, 207, 0.45); }
+.board .target {
+  position: absolute;
+  inset: 36%;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.22);
+  pointer-events: none;
+  z-index: 1;
+}
+.board .target.capture { inset: 4%; background: none; border: 4px solid rgba(0, 0, 0, 0.22); }
+.variation, .engine-lines {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+.variation .actions { margin-top: 6px; }
+.variation p { margin: 0; }
+/* The engine's top lines in the position shown */
+.engine-lines .lines-head { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.engine-lines ol { list-style: none; margin: 0; padding: 0; }
+.engine-lines li + li { border-top: 1px solid var(--border); }
+.engine-lines button.engine-line {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  width: 100%;
+  padding: 6px 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font-weight: 400;
+  text-align: left;
+}
+.engine-lines .eval { flex: none; min-width: 3.4em; }
+.engine-lines .line-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.engine-lines, .engine-lines ol, .engine-lines li { min-width: 0; max-width: 100%; }
+.engine-lines p { margin: 0; }

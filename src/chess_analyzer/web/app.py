@@ -29,7 +29,7 @@ from pydantic import BaseModel, Field
 from chess_analyzer import __version__
 from chess_analyzer.coach import Coach
 from chess_analyzer.engine import find_engine
-from chess_analyzer.explain import explain_ply
+from chess_analyzer.explain import explain_ply, line_steps
 from chess_analyzer.fetch import ChessComClient, LichessClient
 from chess_analyzer.peers import (
     RATING_WINDOW,
@@ -43,6 +43,7 @@ from chess_analyzer.peers import (
     time_controls,
 )
 from chess_analyzer.puzzles import build_puzzle, daily_set, review
+from chess_analyzer.serialize import with_scores
 from chess_analyzer.stats import game_record, player_stats
 from chess_analyzer.takeaway import game_takeaway
 from chess_analyzer.web.device import InvalidEvaluation, find_device_engine
@@ -106,6 +107,14 @@ class PuzzleReview(BaseModel):
     solved: bool
     # The user's own date, so "tomorrow" follows their day, not the server's.
     today: str | None = Field(None, pattern=DATE_PATTERN)
+
+
+class LinesRequest(BaseModel):
+    fen: str = Field(max_length=100)
+    # Lines of UCI moves from ``fen``: the user's own moves or the engine's.
+    lines: list[
+        Annotated[list[Annotated[str, Field(max_length=5)]], Field(max_length=60)]
+    ] = Field(max_length=5)
 
 
 class EngineFiles(StaticFiles):
@@ -243,7 +252,7 @@ def create_app(
             "queue_position": app.state.service.queue_position(job.id),
         }
         if job.status == DONE:
-            data["result"] = job.result
+            data["result"] = with_scores(job.result)
         if job.status == FAILED:
             data["error"] = job.error
         if job.status == DEVICE:
@@ -615,6 +624,32 @@ def create_app(
         if job is None or job.status != DONE:
             raise HTTPException(404, "Analysis not found.")
         return game_takeaway(job.result, color, hide_best=hide_best)
+
+    @app.post("/api/lines")
+    def play_lines(request: LinesRequest) -> dict:
+        """Play moves on a position, for exploring it on the board.
+
+        Returns ``legal``, the legal moves in ``fen`` (UCI to SAN), and for
+        each line its moves with their SAN and the position after them, as
+        :func:`chess_analyzer.explain.line_steps` does, plus the legal moves
+        at its end. Illegal moves end a line.
+        """
+        try:
+            board = chess.Board(request.fen)
+        except ValueError:
+            raise HTTPException(422, "Not a valid position.") from None
+        if not board.is_valid():
+            raise HTTPException(422, "Not a valid position.")
+
+        def legal(position: chess.Board) -> dict:
+            return {m.uci(): position.san(m) for m in position.legal_moves}
+
+        lines = []
+        for moves in request.lines:
+            steps = line_steps(board, moves)
+            end = chess.Board(steps["moves"][-1]["fen"]) if steps["moves"] else board
+            lines.append({**steps, "legal": legal(end)})
+        return {"fen": board.fen(), "legal": legal(board), "lines": lines}
 
     @app.get("/api/pieces/{name}.svg")
     def piece(name: str) -> Response:

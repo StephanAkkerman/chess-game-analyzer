@@ -24,6 +24,8 @@ This page explains how the analyzer works and lists every option. For what it do
    - **Stockfish** searches everything else to depth 16 by default. It uses Stockfish 16 or later (the Docker image builds 17.1), which evaluates positions with its NNUE neural network.
 
    Each move's centipawn loss is the drop in evaluation for the side that moved. Evaluations are capped at ±10 pawns, so going from "mate in 5" to "+15" does not count as a blunder. A loss of 50 centipawns or more is an inaccuracy, 100 or more a mistake, and 300 or more a blunder. As on Chess.com, a mistake or blunder that only missed a mate or a winning tactic, leaving you no worse than half a pawn down, is a *miss*; the only move that kept the balance in a critical moment is *great*; and a best (or nearly best) move that gives up a piece without making your position worse, from a position that was not already easily won, is *brilliant*. Book and forced moves don't count towards the average centipawn loss.
+
+   Each side also gets an accuracy in percent and an estimated rating (`chess_analyzer.accuracy`). Accuracy follows [Lichess](https://lichess.org/page/accuracy): every evaluation becomes a win percentage, each move scores 100% when it keeps the mover's winning chances and less the more of them it gives away, and the game's accuracy is the mean of a volatility-weighted and a harmonic average of the moves, so a few bad moves weigh in more than many easy ones. Unlike centipawn loss, a slip in a position that stays won costs little. Book moves are left out. The estimated rating maps the accuracy to the rating of a player who typically plays that accurately, rounded to 50 points, from 10 evaluated moves on; one game is a rough guide, not a rating.
 5. **Explain the mistakes** (`chess_analyzer.insights`). Using the engine's best move and the opponent's best reply, each mistake and blunder gets a category. These are heuristics; they don't need any extra engine time:
 
    | Category | When |
@@ -106,6 +108,7 @@ Opening
     g6       55% score over 200 games
 
 Black: average centipawn loss 1020
+  Accuracy 9.8%
   2 book, 0 forced, 0 brilliant, 0 great, 0 best, 0 good, 0 inaccuracy, 0 mistake, 0 miss, 1 blunder
   Biggest mistakes:
     3...Nf6      blunder  -0.20 -> +M1  best was g6 (allowed mate)

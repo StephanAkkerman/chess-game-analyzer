@@ -39,6 +39,7 @@ def test_report_for_player(scholars_mate_pgn):
     assert "You left theory with 3...Nf6." in report
     assert "g6       55% score over 200 games" in report
     assert "Black: average centipawn loss 340" in report
+    assert "  Accuracy 20.7%\n" in report
     assert "3...Nf6      blunder  -0.20 -> +M1  best was g6" in report
     # Only the requested side is reported.
     assert "White:" not in report

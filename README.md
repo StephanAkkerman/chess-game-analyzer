@@ -11,7 +11,7 @@
 
 Chess Game Analyzer downloads your recent games from Chess.com or Lichess, runs Stockfish over every move and checks the opening against established theory. Use it from your phone through the web app, or from the command line. For each game it reports:
 
-- your average centipawn loss and a Chess.com-style review: how many of your moves were brilliant, great, best, good, inaccuracies, mistakes, misses or blunders;
+- your accuracy in percent, the rating of a player who typically plays that accurately, your average centipawn loss and a Chess.com-style review: how many of your moves were brilliant, great, best, good, inaccuracies, mistakes, misses or blunders;
 - your biggest mistakes, with the evaluation before and after, the move Stockfish preferred and what kind of error it was (a hung piece, a missed tactic, a spoiled endgame, …);
 - how you used your clock: mistakes played in under 3 seconds, mistakes made in time trouble and long thinks on obvious moves;
 - the move where you or your opponent left opening theory, and the book moves that score best from that position;
@@ -44,10 +44,12 @@ Across several games it shows how your accuracy develops over time, where you le
 The web app is the easiest way to use the analyzer from a phone. Choose Chess.com or Lichess, enter your username and tap a game. Stockfish analyses it, and the page shows:
 
 - the board with an evaluation bar. Step through the moves with the arrows, by swiping the board or by tapping a move;
+- your own moves: move a piece on the board (tap it and then its square, or drag it) to see what would have happened. It starts a line of your own from that position, which you can extend, step through with the arrows and leave with **Back to the game** or Esc;
+- the engine's top three lines in the position shown, with their evaluations, when you turn on ≡ below the board. Stockfish works them out in your browser as you step through the game or your own line, and the evaluation bar follows them. Tap a line to play it out on the board. Before one of your own misses whose answer you haven't looked at, they stay hidden, like the best move;
 - each move's classification. Inaccuracies, mistakes and blunders also show the engine's best move, and "Show best move" draws it on the board; hovering over the best move's name previews it. The ↗ button below the board always draws the engine's best move in the position shown, so you can follow the engine's choices through the game, except before your own misses you haven't looked at yet. For your own mistakes, misses and blunders the best move stays hidden until you ask for it, so you can work it out first or solve it as a puzzle. Mistakes and blunders say what kind of error they were, and every move shows how long it took;
 - under each move, **Why**: an explanation of what the move does, how it is punished and what the better move would have done. Tap a line it spells out, such as *after 27...Qe5+ 28. Kd2 Qf4+*, to play it out on the board move by move; the arrows, keys and dragging the board then step through the line, and Esc goes back to the game. While the best move of your own miss is still hidden, so is its part of the explanation. When the server has a language model, **Ask the coach** rewords it;
 - an evaluation graph. Tap or drag on it to jump through the game;
-- both players' average centipawn loss and biggest mistakes;
+- both players' accuracy, the rating it corresponds to, their average centipawn loss and biggest mistakes;
 - where the game left opening theory, and how the book moves score. Hover over a book move, or tap it, to see it played on the board;
 - the critical moments, marked ◆ in the move list and on the graph. "Try it as a puzzle" opens the position before the move as a puzzle.
 

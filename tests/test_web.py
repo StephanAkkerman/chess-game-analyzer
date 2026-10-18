@@ -1,6 +1,7 @@
 import time
 from unittest.mock import MagicMock
 
+import chess
 import pytest
 import requests
 from fastapi.testclient import TestClient
@@ -70,6 +71,9 @@ def test_analysis_round_trip(tmp_path, scholars_mate_pgn):
     assert result["moves"][-1]["fen"].startswith("r1bqkb1r/pppp1Qpp/")
     assert result["summary"]["black"]["worst"] == [6]
     assert result["summary"]["white"]["counts"]["book"] == 3
+    # Accuracy counts the evaluated moves only: one blunder for Black.
+    assert result["summary"]["black"]["accuracy"] < 50
+    assert result["summary"]["black"]["rating"] is None
 
 
 def test_same_game_is_analysed_once(tmp_path, scholars_mate_pgn):
@@ -211,6 +215,32 @@ def test_frontend_and_pieces_are_served(tmp_path):
         assert piece.headers["content-type"] == "image/svg+xml"
         assert "black knight" in piece.text
         assert client.get("/api/pieces/xx.svg").status_code == 404
+
+
+def test_lines(tmp_path):
+    start = chess.STARTING_FEN
+    with make_client(tmp_path) as client:
+        response = client.post(
+            "/api/lines",
+            json={"fen": start, "lines": [["e2e4", "e7e5", "g1f3"], ["e2e5"], []]},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["legal"]) == 20
+        assert data["legal"]["g1f3"] == "Nf3"
+        played, illegal, empty = data["lines"]
+        assert played["san"] == "1. e4 e5 2. Nf3"
+        assert [m["san"] for m in played["moves"]] == ["e4", "e5", "Nf3"]
+        assert played["moves"][-1]["fen"].startswith(
+            "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b"
+        )
+        assert played["legal"]["b8c6"] == "Nc6"
+        # An illegal move ends the line.
+        assert illegal["moves"] == [] and len(illegal["legal"]) == 20
+        assert empty["fen"] == start
+
+        bad = client.post("/api/lines", json={"fen": "not a fen", "lines": []})
+        assert bad.status_code == 422
 
 
 def test_player_stats(tmp_path, scholars_mate_pgn):

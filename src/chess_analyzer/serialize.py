@@ -5,6 +5,7 @@ from __future__ import annotations
 import chess
 import chess.pgn
 
+from chess_analyzer.accuracy import side_scores
 from chess_analyzer.engine import CLASSIFICATIONS, GameAnalysis, MoveAnalysis
 from chess_analyzer.openings import OpeningDeviation
 from chess_analyzer.parse import opening_name
@@ -129,7 +130,26 @@ def result_to_dict(
         },
         "moves": moves,
         "summary": {
-            "white": summary_to_dict(analysis, chess.WHITE),
-            "black": summary_to_dict(analysis, chess.BLACK),
+            side: {**summary_to_dict(analysis, color), **side_scores(moves, side)}
+            for side, color in zip(SIDES, (chess.WHITE, chess.BLACK))
+        },
+    }
+
+
+def with_scores(result: dict) -> dict:
+    """``result`` with each side's accuracy and estimated rating.
+
+    Analyses stored before they existed lack them; they are worked out from
+    the moves. Returns ``result`` itself when it has them already.
+    """
+    summary = result.get("summary") or {}
+    if all("accuracy" in summary.get(side, {}) for side in SIDES):
+        return result
+    moves = result.get("moves") or []
+    return {
+        **result,
+        "summary": {
+            side: {**summary.get(side, {}), **side_scores(moves, side)}
+            for side in SIDES
         },
     }
