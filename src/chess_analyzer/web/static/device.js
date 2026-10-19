@@ -124,4 +124,52 @@ export class BrowserEngine {
     const { bound, ...value } = score;
     return { best, ...value, pv: pv[0] === best ? pv.slice(0, 12) : [best] };
   }
+
+  // Search `fen` for its `lines` best moves, for showing them while the user
+  // looks around. `onUpdate(found)` gets the lines found so far each time the
+  // search reports, and the promise resolves to the final ones; each line is
+  // { depth, pv, cp } or { depth, pv, mate }, scored from the side to move's
+  // point of view, best first. A later call stops this search early: the
+  // promise then resolves to null.
+  async analyse(fen, { lines = 3, depth = 20, movetime = 4000 } = {}, onUpdate = () => {}) {
+    await this.start();
+    const generation = (this.generation = (this.generation || 0) + 1);
+    if (this.running) {
+      this.send("stop");
+      await this.running.catch(() => {});
+    }
+    if (generation !== this.generation) return null;
+    this.send(`setoption name MultiPV value ${lines}`);
+    this.send(`position fen ${fen}`);
+    const found = [];
+    const running = (this.running = this.waitFor(`go depth ${depth} movetime ${movetime}`, (line) => {
+      if (line.startsWith("info ") && / pv /.test(line)) {
+        const index = Number(line.match(/ multipv (\d+)/)?.[1] || 1) - 1;
+        const score = line.match(/ score (cp|mate) (-?\d+)( lowerbound| upperbound)?/);
+        if (score && (!score[3] || !found[index])) {
+          found[index] = {
+            depth: Number(line.match(/ depth (\d+)/)?.[1] || 0),
+            [score[1]]: Number(score[2]),
+            pv: line.split(" pv ")[1].trim().split(/\s+/).slice(0, 16),
+          };
+          if (generation === this.generation) onUpdate(found.filter(Boolean));
+        }
+        return false;
+      }
+      return /^bestmove /.test(line);
+    }));
+    try {
+      await running;
+    } finally {
+      if (this.running === running) this.running = null;
+    }
+    return generation === this.generation ? found.filter(Boolean) : null;
+  }
+
+  // Stop the search analyse() is running, if any: it resolves to null.
+  halt() {
+    if (!this.running) return;
+    this.generation = (this.generation || 0) + 1;
+    this.send("stop");
+  }
 }

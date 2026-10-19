@@ -7,6 +7,7 @@ import textwrap
 import chess
 import chess.pgn
 
+from chess_analyzer.accuracy import side_scores
 from chess_analyzer.engine import (
     CLASSIFICATIONS,
     FOUND,
@@ -119,13 +120,22 @@ def format_game_report(
 
     if analysis is not None:
         colors = [color] if color is not None else [chess.WHITE, chess.BLACK]
+        move_dicts = [move_to_dict(m) for m in analysis.moves]
         for c in colors:
             counts = analysis.counts(c)
+            scores = side_scores(move_dicts, "white" if c == chess.WHITE else "black")
             lines.append("")
             lines.append(
                 f"{_color_name(c)}: average centipawn loss "
                 f"{analysis.average_cp_loss(c):.0f}"
             )
+            if scores["accuracy"] is not None:
+                rating = (
+                    f", plays like a {scores['rating']} player"
+                    if scores["rating"] is not None
+                    else ""
+                )
+                lines.append(f"  Accuracy {scores['accuracy']:.1f}%{rating}")
             lines.append(
                 "  " + ", ".join(f"{counts.get(k, 0)} {k}" for k in CLASSIFICATIONS)
             )

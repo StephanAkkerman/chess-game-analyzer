@@ -174,8 +174,11 @@
           <button type="button" data-nav="end" aria-label="Last move">⏭</button>
           <button type="button" id="flip" aria-label="Flip board">⇅</button>
           <button type="button" id="engine-arrow" aria-label="Always show the engine's best move" title="Always show the engine's best move">↗</button>
+          <button type="button" id="engine-lines-toggle" aria-label="Show the engine's top three lines" title="Show the engine's top three lines">≡</button>
           <button type="button" id="share" aria-label="Share analysis">Share</button>
         </div>
+        <div id="variation" class="variation" hidden></div>
+        <section id="engine-lines" class="engine-lines" aria-live="polite" hidden></section>
       </div>
 
       <div class="side-column">

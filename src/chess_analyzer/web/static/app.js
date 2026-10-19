@@ -156,6 +156,60 @@ function cplTip() {
   return infoTip("What is centipawn loss?", CPL_TEXT);
 }
 
+const ACCURACY_TEXT =
+  "Accuracy counts how much of your winning chances each move kept, as on " +
+  "Lichess: 100% for a move that kept them all, less the more it gave away. " +
+  "Unlike centipawn loss, a slip in a position that stays won costs little, " +
+  "while one that turns a draw into a loss costs a lot. Book moves are left out.";
+
+const RATING_TEXT =
+  "The rating of a player who typically plays this accurately. It is a rough " +
+  "guide from one game, not a rating: a sharp game can read a few hundred " +
+  "points above or below your real strength. Shown from 10 analysed moves on.";
+
+// The piece on each square of a FEN position, by square name.
+function piecesOf(fen) {
+  const board = {};
+  fen.split(" ")[0].split("/").forEach((row, i) => {
+    let file = 0;
+    for (const ch of row) {
+      if (/\d/.test(ch)) file += Number(ch);
+      else {
+        board["abcdefgh"[file] + (8 - i)] = ch;
+        file += 1;
+      }
+    }
+  });
+  return board;
+}
+
+// Moves in book notation from `fen` on: "5.Nxe5 Bxd1 6.Bxf7+".
+function lineText(fen, sans) {
+  const parts = fen.split(" ");
+  let white = parts[1] === "w";
+  let number = Number(parts[5]) || 1;
+  return sans
+    .map((san, i) => {
+      let text;
+      if (white) text = `${number}.${san}`;
+      else {
+        text = i === 0 ? `${number}...${san}` : san;
+        number += 1;
+      }
+      white = !white;
+      return text;
+    })
+    .join(" ");
+}
+
+// An engine score from the side to move's point of view ({ cp } or
+// { mate }), as centipawns from White's, with mates as in formatEval.
+function whiteEval(fen, score) {
+  const sign = fen.split(" ")[1] === "w" ? 1 : -1;
+  if (score.mate !== undefined) return sign * Math.sign(score.mate || 1) * (MATE - Math.abs(score.mate));
+  return sign * score.cp;
+}
+
 function plural(n, word) {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
@@ -1363,6 +1417,19 @@ class AnalysisView {
     // The user's own missed moves whose best move they chose to see: until
     // then it stays hidden, so they can work it out first.
     this.revealed = new Set();
+    // Whether to show the engine's top lines in the shown position. Stockfish
+    // in the browser works them out: `live` holds what it found for the
+    // position `liveFen`.
+    this.engineLines = store.get("engineLines", false);
+    this.explorer = null;
+    this.live = null;
+    this.liveFen = null;
+    // Legal moves (UCI to SAN) by position, once the server sent them, and
+    // the requests for them.
+    this.legal = new Map();
+    this.legalAsked = new Map();
+    // The square of the piece the user picked up to move.
+    this.selected = null;
   }
 
   mount() {
@@ -1424,6 +1491,7 @@ class AnalysisView {
     this.ply = Math.max(0, Math.min(this.moves.length, ply));
     this.pin = null;
     this.hover = null;
+    this.selected = null;
     this.update();
   }
 
@@ -1431,8 +1499,14 @@ class AnalysisView {
     this.renderBoard();
     this.renderEvalBar();
     this.renderMoveInfo();
+    this.renderLine();
     this.renderGraph();
     this.highlightMove();
+  }
+
+  // The position on the board: the game's, or a preview's or line's.
+  shownFen() {
+    return (this.hover || this.pin)?.fen ?? this.fenAt(this.ply);
   }
 
   side(color) {
@@ -1499,22 +1573,33 @@ class AnalysisView {
   showLine(line, step = 0) {
     this.pin = this.linePreview(line, step);
     this.hover = null;
+    this.selected = null;
     this.renderBoard();
+    this.renderEvalBar();
     this.renderLine();
   }
 
   // Leave the line and show the game again.
   closeLine() {
     this.pin = null;
+    this.selected = null;
     this.renderBoard();
+    this.renderEvalBar();
     this.renderLine();
   }
 
-  // The controls of the line being played out, under the explanation.
+  // The controls of the line being played out: under the explanation for
+  // one of its lines, under the board for the user's own moves.
   renderLine() {
-    const box = document.querySelector("#move-info .line-box");
-    if (!box) return;
     const pin = this.pin?.kind === "line" ? this.pin : null;
+    const own = Boolean(pin?.line.explore);
+    const variation = document.getElementById("variation");
+    const explained = document.querySelector("#move-info .line-box");
+    variation.hidden = !own;
+    if (!own) variation.replaceChildren();
+    else explained?.replaceChildren();
+    const box = own ? variation : explained;
+    if (!box) return;
     if (!pin) return box.replaceChildren();
     const { line, step } = pin;
     const color = line.fen.split(" ")[1];
@@ -1537,6 +1622,7 @@ class AnalysisView {
       );
     });
     box.replaceChildren(
+      own ? el("p", { class: "small" }, el("strong", { text: "Your line. " }), el("span", { class: "muted", text: "Move the pieces to try other moves." })) : "",
       el("p", { class: "line-moves" }, ...moves),
       el(
         "div",
@@ -1544,8 +1630,260 @@ class AnalysisView {
         el("button", { type: "button", "aria-label": "Previous move of the line", text: "◀", disabled: step === 0, onclick: () => this.showLine(line, step - 1) }),
         el("button", { type: "button", "aria-label": "Next move of the line", text: "▶", disabled: step === line.moves.length, onclick: () => this.showLine(line, step + 1) }),
         el("button", { type: "button", text: "Back to the game", onclick: () => this.closeLine() }),
+        own && !this.engineLines
+          ? el("button", { type: "button", text: "Show engine lines", onclick: () => this.setEngineLines(true) })
+          : null,
       ),
     );
+  }
+
+  // ------------------------------------------------------------ own moves
+
+  // Ask the server to play `lines` (lists of UCI moves) from `fen`; it
+  // answers with each move's SAN and position, and the legal moves at the
+  // end of each line, which are kept for moving the pieces there.
+  async playLines(fen, lines) {
+    const data = await api("/api/lines", { method: "POST", body: JSON.stringify({ fen, lines }) });
+    this.legal.set(data.fen, data.legal);
+    for (const line of data.lines) {
+      const end = line.moves.length ? line.moves[line.moves.length - 1].fen : line.fen;
+      this.legal.set(end, line.legal);
+    }
+    return data;
+  }
+
+  // The legal moves in `fen`, asking the server the first time. Resolves to
+  // null if it can't be reached.
+  legalIn(fen) {
+    if (this.legal.has(fen)) return Promise.resolve(this.legal.get(fen));
+    if (!this.legalAsked.has(fen)) {
+      const request = this.playLines(fen, []).then(
+        () => this.legal.get(fen),
+        () => {
+          this.legalAsked.delete(fen);
+          return null;
+        },
+      );
+      this.legalAsked.set(fen, request);
+    }
+    return this.legalAsked.get(fen);
+  }
+
+  // Whether the piece on `square` can be moved: it belongs to the side to
+  // move in the position shown.
+  movable(square) {
+    if (this.hover) return false;
+    const fen = this.shownFen();
+    const piece = piecesOf(fen)[square];
+    return Boolean(piece) && (piece === piece.toUpperCase()) === (fen.split(" ")[1] === "w");
+  }
+
+  select(square) {
+    this.selected = square;
+    this.renderBoard();
+    if (!square) return;
+    const fen = this.shownFen();
+    this.legalIn(fen).then(() => {
+      if (this.selected === square && this.shownFen() === fen) this.renderBoard();
+    });
+  }
+
+  // The squares the selected piece can go to, once the legal moves are known.
+  targets() {
+    const legal = this.selected && this.legal.get(this.shownFen());
+    if (!legal) return null;
+    return new Set(
+      Object.keys(legal)
+        .filter((uci) => uci.startsWith(this.selected))
+        .map((uci) => uci.slice(2, 4)),
+    );
+  }
+
+  // Play the selected piece from `from` to `to`, if that is legal. Pawns
+  // promote to a queen. Returns whether a move was made.
+  tryMove(from, to) {
+    const legal = this.legal.get(this.shownFen());
+    if (!legal) return false;
+    const moves = Object.keys(legal).filter((uci) => uci.slice(0, 4) === from + to);
+    if (!moves.length) return false;
+    this.selected = null;
+    this.playMove(moves.length === 1 ? moves[0] : moves.find((uci) => uci.endsWith("q")) || moves[0]);
+    return true;
+  }
+
+  // Play `uci` in the position shown. The game's own move, or the next move
+  // of the line shown, just steps forward; any other starts a line of the
+  // user's own from there.
+  playMove(uci) {
+    const pin = this.pin?.kind === "line" ? this.pin : null;
+    if (pin) {
+      if (pin.line.moves[pin.step]?.uci === uci) return this.showLine(pin.line, pin.step + 1);
+      const before = pin.line.moves.slice(0, pin.step).map((m) => m.uci);
+      return this.explore(pin.line.fen, [...before, uci]);
+    }
+    const ply = this.gamePlyShown();
+    if (this.moves[ply]?.uci === uci) return this.go(ply + 1);
+    return this.explore(this.fenAt(ply), [uci]);
+  }
+
+  // The game position shown when no line is: a best or book move is shown
+  // in the position before the current move.
+  gamePlyShown() {
+    const ply = this.pin ? this.ply - 1 : this.ply;
+    if (ply !== this.ply) this.go(ply);
+    return ply;
+  }
+
+  // Show `moves` from `fen` as a line of the user's own, at move `step`.
+  async explore(fen, moves, step = moves.length) {
+    const token = (this.exploreToken = (this.exploreToken || 0) + 1);
+    let data;
+    try {
+      data = await this.playLines(fen, [moves]);
+    } catch {
+      return;
+    }
+    if (token !== this.exploreToken || this.token !== routeToken) return;
+    const line = { ...data.lines[0], explore: true };
+    this.showLine(line, Math.min(step, line.moves.length));
+  }
+
+  // ------------------------------------------------------------ engine lines
+
+  setEngineLines(on) {
+    this.engineLines = on;
+    store.set("engineLines", on);
+    document.getElementById("engine-lines-toggle").setAttribute("aria-pressed", String(on));
+    if (!on) {
+      this.explorer?.halt();
+      this.live = null;
+      this.liveFen = null;
+    }
+    this.refreshLines();
+    this.renderLine();
+    this.renderEvalBar();
+  }
+
+  // Whether `fen` is the position before one of the user's own misses whose
+  // answer they haven't seen: the engine would give it away.
+  hidesLines(fen) {
+    return this.moves.some((m) => m.fen_before === fen && this.hidesBest(m));
+  }
+
+  // Search the position shown for the engine's top lines, if the user wants
+  // them and it is a new position.
+  refreshLines() {
+    const box = document.getElementById("engine-lines");
+    box.hidden = !this.engineLines;
+    if (!this.engineLines) return;
+    const fen = this.shownFen();
+    if (fen === this.liveFen) return;
+    this.liveFen = fen;
+    this.live = null;
+    if (this.hidesLines(fen)) {
+      this.explorer?.halt();
+      this.live = { fen, hidden: true };
+      return this.renderLines();
+    }
+    this.renderLines();
+    getConfig().then((config) => {
+      if (this.liveFen !== fen) return;
+      if (!config.device_engine || !deviceSupported()) {
+        this.live = { fen, error: "This browser can't run the engine." };
+        return this.renderLines();
+      }
+      this.explorer ??= new BrowserEngine(config.device_engine);
+      // The engine reports in UCI; the server writes the lines in SAN, at
+      // most every 600ms while the search goes on.
+      let pending = null;
+      let busy = false;
+      const convert = async () => {
+        if (busy || !pending || this.liveFen !== fen) return;
+        busy = true;
+        const found = pending;
+        pending = null;
+        try {
+          const data = await this.playLines(fen, found.map((l) => l.pv));
+          if (this.liveFen === fen && this.token === routeToken) {
+            this.live = {
+              fen,
+              depth: found.length ? Math.min(...found.map((l) => l.depth)) : 0,
+              lines: found.map((l, i) => ({ eval: whiteEval(fen, l), steps: data.lines[i] })),
+            };
+            this.renderLines();
+            this.renderEvalBar();
+          }
+        } catch {
+          /* the next update tries again */
+        }
+        setTimeout(() => {
+          busy = false;
+          convert();
+        }, 600);
+      };
+      this.explorer.analyse(fen, { lines: 3 }, (found) => {
+        pending = found;
+        convert();
+      }).then(
+        (found) => {
+          if (!found) return;
+          pending = found;
+          convert();
+        },
+        () => {
+          this.explorer = null;
+          if (this.liveFen !== fen) return;
+          this.live = { fen, error: "The engine could not start in this browser." };
+          this.renderLines();
+        },
+      );
+    });
+  }
+
+  renderLines() {
+    const box = document.getElementById("engine-lines");
+    const live = this.live;
+    const note = (text) => box.replaceChildren(el("p", { class: "muted small", text }));
+    if (!live) return note("Stockfish is thinking…");
+    if (live.hidden) return note("The engine's lines are hidden here until you look at the answer, so you can work it out first.");
+    if (live.error) return note(live.error);
+    if (!live.lines.length) return note("No legal moves: the game is over in this position.");
+    box.replaceChildren(
+      el(
+        "div",
+        { class: "lines-head" },
+        el("strong", { class: "small", text: "Engine lines" }),
+        el("span", { class: "muted small", text: `depth ${live.depth}` }),
+      ),
+      el(
+        "ol",
+        {},
+        ...live.lines.map((line) =>
+          el(
+            "li",
+            {},
+            el(
+              "button",
+              { type: "button", class: "engine-line", title: "Play this line on the board", onclick: () => this.followLine(line) },
+              el("span", { class: "eval", text: formatEval(line.eval) }),
+              el("span", { class: "line-text", text: lineText(line.steps.fen, line.steps.moves.map((m) => m.san)) }),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // Play an engine line on from the position shown, one move in.
+  followLine(line) {
+    const moves = line.steps.moves.map((m) => m.uci);
+    if (!moves.length) return;
+    const pin = this.pin?.kind === "line" ? this.pin : null;
+    if (pin) {
+      const before = pin.line.moves.slice(0, pin.step).map((m) => m.uci);
+      return this.explore(pin.line.fen, [...before, ...moves], before.length + 1);
+    }
+    this.explore(this.fenAt(this.gamePlyShown()), moves, 1);
   }
 
   // `text` with every engine line in `lines` made a link that plays it out
@@ -1624,6 +1962,7 @@ class AnalysisView {
     if (shown?.uci) highlight.add(shown.uci.slice(0, 2));
     if (shown?.last) highlight.add(shown.last.slice(0, 2)).add(shown.last.slice(2, 4));
 
+    const targets = this.targets();
     const squares = [];
     for (let r = 0; r < 8; r++) {
       for (let f = 0; f < 8; f++) {
@@ -1632,12 +1971,14 @@ class AnalysisView {
         const name = "abcdefgh"[file] + (rank + 1);
         const piece = grid[7 - rank][file];
         const sq = el("div", {
-          class: `sq ${(rank + file) % 2 ? "light" : "dark"}${highlight.has(name) ? " hl" : ""}`,
+          class: `sq ${(rank + file) % 2 ? "light" : "dark"}${highlight.has(name) ? " hl" : ""}${name === this.selected ? " selected" : ""}`,
+          "data-sq": name,
         });
         if (piece) {
           const code = (piece === piece.toUpperCase() ? "w" : "b") + piece.toUpperCase();
           sq.append(el("img", { src: `/api/pieces/${code}.svg`, alt: "", draggable: "false" }));
         }
+        if (targets?.has(name)) sq.append(el("span", { class: piece ? "target capture" : "target" }));
         if (f === 0) sq.append(el("span", { class: "coord rank", text: String(rank + 1) }));
         if (r === 7) sq.append(el("span", { class: "coord file", text: "abcdefgh"[file] }));
         if (name === badgeSquare && CLASS_INFO[move.classification].sym) {
@@ -1663,6 +2004,7 @@ class AnalysisView {
       "aria-label",
       move ? `Position after ${move.label}` : "Starting position",
     );
+    this.refreshLines();
   }
 
   arrow(uci, kind = "") {
@@ -1698,8 +2040,14 @@ class AnalysisView {
   }
 
   renderEvalBar() {
-    const cp = this.evalAt(this.ply);
-    const source = this.sourceAt(this.ply);
+    let cp = this.evalAt(this.ply);
+    let source = this.sourceAt(this.ply);
+    // In a line, the engine's evaluation of the position shown, if it has one.
+    const live = this.live?.fen === this.shownFen() ? this.live.lines?.[0] : null;
+    if (this.pin?.kind === "line" && live) {
+      cp = live.eval;
+      source = null;
+    }
     const white = 50 + 50 * winChance(cp);
     document.getElementById("evalbar-white").style.height = `${white}%`;
     const label = document.getElementById("evalbar-label");
@@ -1714,7 +2062,7 @@ class AnalysisView {
     if (!move) {
       box.replaceChildren(
         el("div", { class: "headline" }, el("span", { class: "move", text: "Start" })),
-        el("p", { class: "muted", text: "Use the arrows, drag the board sideways or tap a move." }),
+        el("p", { class: "muted", text: "Use the arrows, drag the board sideways or tap a move. Move the pieces to try your own moves." }),
       );
       return;
     }
@@ -2122,7 +2470,16 @@ class AnalysisView {
           "div",
           { class: "side" },
           el("h3", {}, el("span", { class: `piece-dot ${color}` }), name, this.me === color ? el("span", { class: "muted", text: "(you)" }) : null),
-          el("div", { class: "stat", text: String(s.acpl) }),
+          s.accuracy === null || s.accuracy === undefined
+            ? null
+            : el("div", { class: "stat", text: `${s.accuracy.toFixed(1)}%` }),
+          s.accuracy === null || s.accuracy === undefined
+            ? null
+            : el("div", { class: "stat-label" }, "accuracy ", infoTip("What is accuracy?", ACCURACY_TEXT)),
+          s.rating
+            ? el("p", { class: "small game-rating" }, `Played like a ${s.rating} player `, infoTip("How is this worked out?", RATING_TEXT))
+            : null,
+          el("div", { class: "stat" + (s.accuracy === null || s.accuracy === undefined ? "" : " stat-small"), text: String(s.acpl) }),
           el("div", { class: "stat-label" }, "average centipawn loss ", cplTip()),
           el(
             "ul",
@@ -2359,6 +2716,10 @@ class AnalysisView {
       this.renderBoard();
     });
     document.getElementById("share").addEventListener("click", () => this.share());
+    document.getElementById("engine-lines-toggle").setAttribute("aria-pressed", String(this.engineLines));
+    document.getElementById("engine-lines-toggle").addEventListener("click", () => this.setEngineLines(!this.engineLines));
+    // The engine's worker is the page's: stop it when the user moves on.
+    window.addEventListener("hashchange", () => this.explorer?.stop(), { once: true });
     const engine = document.getElementById("engine-arrow");
     engine.setAttribute("aria-pressed", String(this.engineArrow));
     engine.addEventListener("click", () => {
@@ -2390,12 +2751,40 @@ class AnalysisView {
     // Drag the board sideways to step through moves, like the move list reads:
     // to the right goes forward, to the left goes back. Every 40px is one
     // move, so a long drag scrubs through several of them.
+    //
+    // Pressing a piece of the side to move picks it up instead: tap the
+    // square to play it to, or drag it there.
     const STEP_PX = 40;
     let dragX = null;
+    let liftedFrom = null;
+    let wasSelected = false;
+    const squareOf = (e) => e.target.closest?.("[data-sq]")?.dataset.sq;
+    const squareAt = (e) =>
+      document.elementFromPoint(e.clientX, e.clientY)?.closest?.("#board [data-sq]")?.dataset.sq;
+    // A touch on a piece moves it rather than scrolling the page.
+    this.board.addEventListener(
+      "touchstart",
+      (e) => {
+        const name = squareOf(e);
+        if (name && (this.movable(name) || this.targets()?.has(name))) e.preventDefault();
+      },
+      { passive: false },
+    );
     this.board.addEventListener("pointerdown", (e) => {
       if (e.pointerType === "mouse" && e.button !== 0) return;
-      dragX = e.clientX;
       this.board.setPointerCapture(e.pointerId);
+      dragX = null;
+      liftedFrom = null;
+      const name = squareOf(e);
+      if (name && this.selected && name !== this.selected && this.tryMove(this.selected, name)) return;
+      if (name && this.movable(name)) {
+        liftedFrom = name;
+        wasSelected = this.selected === name;
+        if (!wasSelected) this.select(name);
+        return;
+      }
+      if (this.selected) this.select(null);
+      dragX = e.clientX;
     });
     this.board.addEventListener("pointermove", (e) => {
       if (dragX === null) return;
@@ -2406,9 +2795,23 @@ class AnalysisView {
       const ply = Math.max(0, Math.min(this.moves.length, this.ply + steps));
       if (ply !== this.ply) this.go(ply);
     });
-    const endDrag = () => (dragX = null);
-    this.board.addEventListener("pointerup", endDrag);
-    this.board.addEventListener("pointercancel", endDrag);
+    this.board.addEventListener("pointerup", async (e) => {
+      dragX = null;
+      const from = liftedFrom;
+      liftedFrom = null;
+      if (!from) return;
+      const to = squareAt(e);
+      if (to && to !== from) {
+        await this.legalIn(this.shownFen());
+        if (this.selected === from) this.tryMove(from, to);
+      } else if (to === from && wasSelected) {
+        this.select(null);
+      }
+    });
+    this.board.addEventListener("pointercancel", () => {
+      dragX = null;
+      liftedFrom = null;
+    });
 
     // Tap or drag on the graph to scrub through the game.
     const graph = document.getElementById("graph");
